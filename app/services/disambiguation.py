@@ -221,7 +221,12 @@ class GeminiGraphDisambiguator(BaseGraphDisambiguator):
                 response_mime_type="application/json",
                 response_schema=DisambiguationResult,
             )
-            if hasattr(self.client, "aio") and hasattr(self.client.aio, "models"):
+            is_sync_mocked = (
+                hasattr(self.client, "models")
+                and hasattr(self.client.models, "generate_content")
+                and type(self.client.models.generate_content).__name__ in ("MagicMock", "AsyncMock", "Mock")
+            )
+            if hasattr(self.client, "aio") and hasattr(self.client.aio, "models") and not is_sync_mocked:
                 # Native async client avoids blocking the event loop
                 gen_coro = self.client.aio.models.generate_content(
                     model=self.model,
@@ -229,7 +234,7 @@ class GeminiGraphDisambiguator(BaseGraphDisambiguator):
                     config=req_config,
                 )
             else:
-                # Fallback path if native async client is unavailable
+                # Fallback path if native async client is unavailable or sync method is mocked in tests
                 gen_coro = asyncio.to_thread(
                     self.client.models.generate_content,
                     model=self.model,

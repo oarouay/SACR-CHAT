@@ -461,19 +461,20 @@ export const personasApi = {
 
 // 7. Public Chatbot Widget API (Unauthenticated / Public Website Visitor)
 export const publicWidgetApi = {
-  async getConfig(tenantSlug, customBaseUrl = '') {
+  async getConfig(tenantSlug, personaId = null, customBaseUrl = '') {
     const base = customBaseUrl || API_BASE;
-    const res = await fetch(`${base}/chat/public/${encodeURIComponent(tenantSlug)}/config`);
+    const query = personaId ? `?persona_id=${encodeURIComponent(personaId)}` : '';
+    const res = await fetch(`${base}/chat/public/${encodeURIComponent(tenantSlug)}/config${query}`);
     if (!res.ok) throw new Error('Failed to load bot configuration');
     return res.json();
   },
 
-  async sendMessage(tenantSlug, message, history = [], customBaseUrl = '') {
+  async sendMessage(tenantSlug, message, history = [], personaId = null, customBaseUrl = '') {
     const base = customBaseUrl || API_BASE;
     const res = await fetch(`${base}/chat/public/${encodeURIComponent(tenantSlug)}/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, history }),
+      body: JSON.stringify({ message, history, persona_id: personaId || undefined }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -486,7 +487,7 @@ export const publicWidgetApi = {
     tenantSlug,
     message,
     history = [],
-    { onToken, onMetadata, onDone, onError, signal } = {},
+    { onToken, onMetadata, onDone, onError, signal, personaId } = {},
     customBaseUrl = ''
   ) {
     const base = customBaseUrl || API_BASE;
@@ -497,7 +498,7 @@ export const publicWidgetApi = {
           'Content-Type': 'application/json',
           'Accept': 'text/event-stream',
         },
-        body: JSON.stringify({ message, history }),
+        body: JSON.stringify({ message, history, persona_id: personaId || undefined }),
         signal,
       });
 
@@ -569,6 +570,30 @@ export const publicWidgetApi = {
         throw err;
       }
     }
+  },
+};
+
+/**
+ * Developer API Keys API Client
+ */
+export const apiKeysApi = {
+  list: () => request('/api-keys/'),
+  create: (data) => request('/api-keys/', { method: 'POST', body: JSON.stringify(data) }),
+  rotate: (id) => request(`/api-keys/${id}/rotate`, { method: 'POST' }),
+  revoke: (id) => request(`/api-keys/${id}`, { method: 'DELETE' }),
+  getUsage: (id) => request(`/api-keys/${id}/usage`),
+};
+
+/**
+ * Tenant Observability & Usage Analytics Client
+ */
+export const analyticsApi = {
+  getTenantAnalytics: (params = {}) => {
+    const query = new URLSearchParams();
+    if (params.from) query.set('from', params.from);
+    if (params.to) query.set('to', params.to);
+    const qs = query.toString() ? `?${query.toString()}` : '';
+    return request(`/tenants/analytics${qs}`);
   },
 };
 

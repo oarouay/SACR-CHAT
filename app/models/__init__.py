@@ -7,6 +7,8 @@ from app.models.chunk import DocumentChunk
 from app.models.chatbot import ChatbotConfig
 from app.models.conversation import Conversation, ChatMessage
 from app.models.ai_profile import AIProfile, AIProfileVersion, Persona, AIProfileEvalCase
+from app.models.api_key import TenantApiKey
+from app.models.usage import UsageEvent
 
 __all__ = [
     "Base",
@@ -26,5 +28,7 @@ __all__ = [
     "AIProfileVersion",
     "Persona",
     "AIProfileEvalCase",
+    "TenantApiKey",
+    "UsageEvent",
 ]
 

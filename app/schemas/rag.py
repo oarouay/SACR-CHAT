@@ -9,6 +9,7 @@ class RAGQueryRequest(BaseModel):
     max_graph_hops: int = Field(default=2, ge=1, le=3, description="Depth of graph neighborhood traversal")
     temperature: float = Field(default=0.2, ge=0.0, le=1.0, description="LLM sampling temperature")
     source_id: Optional[int] = Field(default=None, description="Optional filter to scope retrieval to a specific document")
+    persona_id: Optional[int] = Field(default=None, description="Optional persona ID to select")
 
 
 class RAGSourceCitation(BaseModel):
@@ -44,3 +45,8 @@ class RAGQueryResponse(BaseModel):
     evidence_status: Optional[str] = Field(default="sufficient", description="sufficient, partial, insufficient, conflicting")
     ai_profile_version: Optional[int] = Field(default=None)
     persona_name: Optional[str] = Field(default=None)
+    input_tokens: Optional[int] = Field(default=None, description="Input/prompt token count from LLM provider")
+    output_tokens: Optional[int] = Field(default=None, description="Output/completion token count from LLM provider")
+    total_tokens: Optional[int] = Field(default=None, description="Total tokens consumed")
+    llm_provider: Optional[str] = Field(default=None, description="LLM provider: openai, gemini, etc.")
+    llm_model: Optional[str] = Field(default=None, description="LLM model identifier")

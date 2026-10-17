@@ -24,6 +24,8 @@
   const tenantSlug = currentScript.getAttribute('data-tenant-slug');
   const primaryColor = currentScript.getAttribute('data-primary-color') || '#4F5BD5';
   const position = currentScript.getAttribute('data-position') || 'right';
+  const personaIdAttr = currentScript.getAttribute('data-persona-id');
+  let currentPersonaId = personaIdAttr ? parseInt(personaIdAttr, 10) : null;
   
   // Extract API Base URL from script origin or custom attribute
   const scriptUrl = new URL(currentScript.src, window.location.href);
@@ -64,13 +66,14 @@
       box-shadow: 0 10px 25px -4px ${primaryColor}77, 0 6px 14px -4px rgba(0, 0, 0, 0.45);
       border: 1px solid rgba(255, 255, 255, 0.15);
       cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      display: grid;
+      place-items: center;
       color: #FFFFFF;
       transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease;
       position: relative;
       outline: none;
+      padding: 0;
+      overflow: visible;
     }
 
     .launcher-btn:hover {
@@ -87,16 +90,19 @@
     }
 
     .launcher-icon {
-      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
-    }
-
-    .launcher-icon.icon-open {
-      position: absolute;
+      grid-area: 1 / 1;
+      width: 24px;
+      height: 24px;
+      display: block;
+      pointer-events: none;
+      transform-origin: center center;
+      transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease;
     }
 
     .launcher-btn.is-active .icon-chat {
       opacity: 0;
-      transform: rotate(90deg) scale(0.6);
+      transform: rotate(90deg) scale(0.5);
+      pointer-events: none;
     }
 
     .launcher-btn.is-active .icon-close {
@@ -111,25 +117,8 @@
 
     .launcher-btn:not(.is-active) .icon-close {
       opacity: 0;
-      transform: rotate(-90deg) scale(0.6);
-    }
-
-    .unread-dot {
-      position: absolute;
-      top: 1px;
-      right: 1px;
-      width: 13px;
-      height: 13px;
-      background: #10B981;
-      border: 2.5px solid #0B0F19;
-      border-radius: 50%;
-      box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.35);
-      animation: unreadPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-    }
-
-    @keyframes unreadPulse {
-      0%, 100% { transform: scale(1); opacity: 1; }
-      50% { transform: scale(1.15); opacity: 0.85; }
+      transform: rotate(-90deg) scale(0.5);
+      pointer-events: none;
     }
 
     /* Chat Modal Window */
@@ -202,16 +191,7 @@
     .bot-status-row {
       display: flex;
       align-items: center;
-      gap: 6px;
       margin-top: 2px;
-    }
-
-    .status-live-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: #10B981;
-      box-shadow: 0 0 6px #10B981;
     }
 
     .bot-subtitle {
@@ -583,29 +563,27 @@
   const widgetWrapper = document.createElement('div');
   widgetWrapper.innerHTML = `
     <!-- Floating Launcher -->
-    <button class="launcher-btn" id="launcher-btn" aria-label="Toggle Knowledge Chat">
+    <button class="launcher-btn" id="launcher-btn" aria-label="Toggle Chat Assistant">
       <!-- Chat Icon -->
-      <svg class="launcher-icon icon-chat" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <svg class="launcher-icon icon-chat" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/>
       </svg>
       <!-- Close Icon -->
-      <svg class="launcher-icon icon-close" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <svg class="launcher-icon icon-close" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="18" y1="6" x2="6" y2="18"/>
         <line x1="6" y1="6" x2="18" y2="18"/>
       </svg>
-      <span class="unread-dot" id="unread-dot"></span>
     </button>
 
     <!-- Chat Modal Window -->
-    <div class="chat-window hidden" id="chat-window" role="dialog" aria-label="Knowledge Assistant Window">
+    <div class="chat-window hidden" id="chat-window" role="dialog" aria-label="Chat Assistant Window">
       <div class="chat-header">
         <div class="header-info">
           <div class="bot-avatar" id="header-avatar">AI</div>
           <div>
             <div class="bot-title" id="header-title">Assistant</div>
             <div class="bot-status-row">
-              <span class="status-live-dot"></span>
-              <span class="bot-subtitle" id="header-subtitle">GraphRAG Verified</span>
+              <span class="bot-subtitle" id="header-subtitle">Here to help</span>
             </div>
           </div>
         </div>
@@ -636,7 +614,7 @@
         </button>
       </form>
 
-      <div class="footer-badge">Powered by OmniGraph Multi-Tenant Knowledge RAG</div>
+      <div class="footer-badge">Powered by OmniGraph</div>
     </div>
   `;
   shadow.appendChild(widgetWrapper);
@@ -652,7 +630,6 @@
   const headerTitle = shadow.getElementById('header-title');
   const headerSubtitle = shadow.getElementById('header-subtitle');
   const headerAvatar = shadow.getElementById('header-avatar');
-  const unreadDot = shadow.getElementById('unread-dot');
 
   let isOpen = false;
   let conversationHistory = []; // { role: "user" | "assistant", content: "..." }
@@ -754,7 +731,6 @@
     if (isOpen) {
       launcherBtn.classList.add('is-active');
       chatWindow.classList.remove('hidden');
-      unreadDot.style.display = 'none';
       setTimeout(() => chatInput.focus(), 100);
     } else {
       launcherBtn.classList.remove('is-active');
@@ -826,24 +802,34 @@
     }
   }
 
+  function updatePersonaDisplay(name, role) {
+    headerTitle.textContent = name || 'Assistant';
+    headerSubtitle.textContent = role || 'Here to help';
+    const avatarName = name || 'AI';
+    headerAvatar.textContent = avatarName.substring(0, 2).toUpperCase();
+  }
+
   // 7. Fetch Public Tenant Configuration on Start
   async function initBotConfig() {
     try {
-      const res = await fetch(`${apiBase}/chat/public/${encodeURIComponent(tenantSlug)}/config`);
+      const queryParams = new URLSearchParams();
+      if (currentPersonaId) queryParams.set('persona_id', currentPersonaId);
+      const qs = queryParams.toString() ? `?${queryParams.toString()}` : '';
+      const res = await fetch(`${apiBase}/chat/public/${encodeURIComponent(tenantSlug)}/config${qs}`);
       if (!res.ok) throw new Error('Bot config request failed');
       botConfig = await res.json();
 
-      headerTitle.textContent = botConfig.name || 'Assistant';
-      headerSubtitle.textContent = botConfig.tenant_name || 'Knowledge Support';
-      if (botConfig.name) {
-        headerAvatar.textContent = botConfig.name.substring(0, 2).toUpperCase();
+      if (botConfig.persona_id) {
+        currentPersonaId = botConfig.persona_id;
       }
+
+      updatePersonaDisplay(botConfig.name || botConfig.persona_name, botConfig.role || botConfig.persona_role);
 
       // Display Initial Welcome Greeting in rendered markdown
       appendStaticMessage('assistant', botConfig.welcome_message || 'Hello! How can I help you today?');
     } catch (err) {
       console.warn('[OmniGraph] Could not fetch public config for slug:', tenantSlug, err);
-      appendStaticMessage('assistant', 'Hello! How can I assist you with our documentation today?');
+      appendStaticMessage('assistant', 'Hello! How can I help you today?');
     }
   }
 
@@ -912,6 +898,7 @@
         body: JSON.stringify({
           message: cleanMsg,
           history: conversationHistory.slice(-6),
+          persona_id: currentPersonaId || undefined,
         }),
       });
 
@@ -1006,6 +993,7 @@
             body: JSON.stringify({
               message: cleanMsg,
               history: conversationHistory.slice(-6),
+              persona_id: currentPersonaId || undefined,
             }),
           });
           const data = await res.json();

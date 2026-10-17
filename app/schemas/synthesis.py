@@ -23,6 +23,11 @@ class SynthesisResult(BaseModel):
         default="complete",
         description="Context match tier: 'complete', 'partial', or 'zero_match'."
     )
+    input_tokens: Optional[int] = Field(default=None, description="Input/prompt token count")
+    output_tokens: Optional[int] = Field(default=None, description="Output/completion token count")
+    total_tokens: Optional[int] = Field(default=None, description="Total tokens consumed")
+    llm_provider: Optional[str] = Field(default=None, description="Provider used (openai, gemini, etc.)")
+    llm_model: Optional[str] = Field(default=None, description="Model identifier")
 
     def __contains__(self, item: str) -> bool:
         return item in self.answer

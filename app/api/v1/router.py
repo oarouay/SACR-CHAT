@@ -9,6 +9,7 @@ from app.api.v1.endpoints.chatbot import router as chatbot_router
 from app.api.v1.endpoints.chat import router as chat_router
 from app.api.v1.endpoints.ai_profiles import router as ai_profiles_router
 from app.api.v1.endpoints.personas import router as personas_router
+from app.api.v1.endpoints.api_keys import router as api_keys_router
 
 api_v1_router = APIRouter()
 
@@ -22,5 +23,6 @@ api_v1_router.include_router(chatbot_router)
 api_v1_router.include_router(chat_router)
 api_v1_router.include_router(ai_profiles_router)
 api_v1_router.include_router(personas_router)
+api_v1_router.include_router(api_keys_router)
 
 

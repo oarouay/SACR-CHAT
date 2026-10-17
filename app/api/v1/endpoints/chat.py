@@ -1,7 +1,8 @@
 import json
 import logging
+import time
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,8 +11,10 @@ from sqlalchemy.orm import selectinload
 logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
+from app.dependencies.api_key import RequestPrincipal, get_request_principal
 from app.dependencies.auth import get_current_user
 from app.dependencies.tenant import get_current_tenant
+from app.services.usage_service import record_usage_event
 from app.models.chatbot import ChatbotConfig
 from app.models.conversation import ChatMessage, Conversation
 from app.models.ai_profile import Persona
@@ -27,7 +30,7 @@ from app.schemas.conversation import (
     ConversationRead,
     PublicChatMessageRequest,
 )
-from app.schemas.rag import RAGQueryResponse
+from app.schemas.rag import RAGQueryRequest, RAGQueryResponse
 from app.services.synthesis import RAGPipelineService
 
 router = APIRouter(prefix="/chat", tags=["Multi-Turn Chat & Conversation Sessions"])
@@ -41,14 +44,19 @@ router = APIRouter(prefix="/chat", tags=["Multi-Turn Chat & Conversation Session
 )
 async def create_conversation(
     payload: ConversationCreate,
-    tenant: Tenant = Depends(get_current_tenant),
-    current_user: User = Depends(get_current_user),
+    principal: RequestPrincipal = Depends(get_request_principal),
     db: AsyncSession = Depends(get_db)
 ):
     """Start a new chat session scoped to the active tenant."""
+    if principal.is_api_key and "chat:write" not in principal.scopes and "*" not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key missing required scope 'chat:write'"
+        )
+
     conversation = Conversation(
-        tenant_id=tenant.id,
-        user_id=current_user.id,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
         title=payload.title or "New Conversation"
     )
     db.add(conversation)
@@ -71,15 +79,20 @@ async def create_conversation(
     summary="List all conversation sessions for the active tenant"
 )
 async def list_conversations(
-    tenant: Tenant = Depends(get_current_tenant),
-    current_user: User = Depends(get_current_user),
+    principal: RequestPrincipal = Depends(get_request_principal),
     db: AsyncSession = Depends(get_db)
 ):
     """List recent conversation sessions with message counts."""
+    if principal.is_api_key and "chat:read" not in principal.scopes and "*" not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key missing required scope 'chat:read'"
+        )
+
     # Subquery for message counts
     count_subq = (
         select(ChatMessage.conversation_id, func.count(ChatMessage.id).label("msg_count"))
-        .where(ChatMessage.tenant_id == tenant.id)
+        .where(ChatMessage.tenant_id == principal.tenant_id)
         .group_by(ChatMessage.conversation_id)
         .subquery()
     )
@@ -87,7 +100,7 @@ async def list_conversations(
     stmt = (
         select(Conversation, func.coalesce(count_subq.c.msg_count, 0).label("message_count"))
         .outerjoin(count_subq, Conversation.id == count_subq.c.conversation_id)
-        .where(Conversation.tenant_id == tenant.id)
+        .where(Conversation.tenant_id == principal.tenant_id)
         .order_by(Conversation.updated_at.desc())
     )
     res = await db.execute(stmt)
@@ -115,14 +128,19 @@ async def list_conversations(
 )
 async def get_conversation(
     conversation_id: int,
-    tenant: Tenant = Depends(get_current_tenant),
-    current_user: User = Depends(get_current_user),
+    principal: RequestPrincipal = Depends(get_request_principal),
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve all messages and citations in a specific conversation session."""
+    if principal.is_api_key and "chat:read" not in principal.scopes and "*" not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key missing required scope 'chat:read'"
+        )
+
     stmt = (
         select(Conversation)
-        .where(Conversation.id == conversation_id, Conversation.tenant_id == tenant.id)
+        .where(Conversation.id == conversation_id, Conversation.tenant_id == principal.tenant_id)
     )
     res = await db.execute(stmt)
     conv = res.scalar_one_or_none()
@@ -134,7 +152,7 @@ async def get_conversation(
 
     msg_stmt = (
         select(ChatMessage)
-        .where(ChatMessage.conversation_id == conversation_id, ChatMessage.tenant_id == tenant.id)
+        .where(ChatMessage.conversation_id == conversation_id, ChatMessage.tenant_id == principal.tenant_id)
         .order_by(ChatMessage.id.asc())
     )
     msg_res = await db.execute(msg_stmt)
@@ -159,14 +177,22 @@ async def get_conversation(
 async def send_chat_message(
     conversation_id: int,
     payload: ChatMessageSendRequest,
-    tenant: Tenant = Depends(get_current_tenant),
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    principal: RequestPrincipal = Depends(get_request_principal),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Submits a user prompt, retrieves relevant vector chunks and knowledge graph relationships
     with conversation memory context, and returns the assistant's answer with citations.
     """
+    if principal.is_api_key and "chat:write" not in principal.scopes and "*" not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key missing required scope 'chat:write'"
+        )
+
+    tenant = principal.tenant
+
     # 1. Fetch conversation
     stmt = (
         select(Conversation)
@@ -188,8 +214,9 @@ async def send_chat_message(
         profile, active_persona = await AIProfileService.get_or_create_default_profile(
             db=db, tenant_id=tenant.id, tenant_name=tenant.name
         )
-        if payload.persona_id:
-            p_stmt = select(Persona).where(Persona.id == payload.persona_id, Persona.tenant_id == tenant.id)
+        effective_persona_id = payload.persona_id or principal.persona_id
+        if effective_persona_id:
+            p_stmt = select(Persona).where(Persona.id == effective_persona_id, Persona.tenant_id == tenant.id)
             p_res = await db.execute(p_stmt)
             req_p = p_res.scalar_one_or_none()
             if req_p:
@@ -272,6 +299,30 @@ async def send_chat_message(
     await db.commit()
     await db.refresh(assistant_msg)
 
+    # 8. Record telemetry & usage event
+    req_id = getattr(request.state, "request_id", "req_unknown")
+    latency = getattr(request.state, "latency_ms", rag_response.execution_time_ms)
+    await record_usage_event(
+        db=db,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        api_key_id=principal.api_key_id,
+        auth_type=principal.auth_type,
+        request_id=req_id,
+        event_type="chat",
+        endpoint=request.url.path,
+        http_method=request.method,
+        status_code=201,
+        latency_ms=latency,
+        provider=getattr(rag_response, "llm_provider", None),
+        model=getattr(rag_response, "llm_model", None),
+        input_tokens=getattr(rag_response, "input_tokens", None),
+        output_tokens=getattr(rag_response, "output_tokens", None),
+        total_tokens=getattr(rag_response, "total_tokens", None),
+        source_count=len(rag_response.source_citations),
+        conversation_id=conversation_id,
+    )
+
     return ChatMessageRead.from_orm_with_citations(assistant_msg)
 
 
@@ -282,8 +333,8 @@ async def send_chat_message(
 async def send_chat_message_stream(
     conversation_id: int,
     payload: ChatMessageSendRequest,
-    tenant: Tenant = Depends(get_current_tenant),
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    principal: RequestPrincipal = Depends(get_request_principal),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -291,6 +342,14 @@ async def send_chat_message_stream(
     with conversation memory context, and streams the assistant's answer token-by-token via SSE,
     finishing with a metadata event containing citations and follow-up suggestions.
     """
+    if principal.is_api_key and "chat:write" not in principal.scopes and "*" not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key missing required scope 'chat:write'"
+        )
+
+    tenant = principal.tenant
+
     # 1. Fetch conversation
     stmt = (
         select(Conversation)
@@ -312,8 +371,9 @@ async def send_chat_message_stream(
         profile, active_persona = await AIProfileService.get_or_create_default_profile(
             db=db, tenant_id=tenant.id, tenant_name=tenant.name
         )
-        if payload.persona_id:
-            p_stmt = select(Persona).where(Persona.id == payload.persona_id, Persona.tenant_id == tenant.id)
+        effective_persona_id = payload.persona_id or principal.persona_id
+        if effective_persona_id:
+            p_stmt = select(Persona).where(Persona.id == effective_persona_id, Persona.tenant_id == tenant.id)
             p_res = await db.execute(p_stmt)
             req_p = p_res.scalar_one_or_none()
             if req_p:
@@ -346,6 +406,9 @@ async def send_chat_message_stream(
     conv.messages.append(user_msg)
     await db.commit()
 
+    stream_start_time = time.perf_counter()
+    req_id = getattr(request.state, "request_id", "req_unknown")
+
     async def sse_event_generator():
         accumulated_text = []
         terminal_metadata = None
@@ -376,10 +439,29 @@ async def send_chat_message_stream(
                     yield f"event: metadata\ndata: {json.dumps(meta_payload)}\n\n"
         except Exception as e:
             logger.error(f"Error during SSE chat stream: {e}", exc_info=True)
+            stream_latency = (time.perf_counter() - stream_start_time) * 1000.0
+            try:
+                await record_usage_event(
+                    db=db,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    api_key_id=principal.api_key_id,
+                    auth_type=principal.auth_type,
+                    request_id=req_id,
+                    event_type="chat_stream",
+                    endpoint=request.url.path,
+                    http_method=request.method,
+                    status_code=500,
+                    latency_ms=stream_latency,
+                    conversation_id=conversation_id,
+                )
+            except Exception:
+                pass
             yield f"event: error\ndata: {json.dumps({'detail': str(e)})}\n\n"
             return
 
         # 6. Save Assistant response with citations, audit metadata, and router action into database
+        stream_latency = (time.perf_counter() - stream_start_time) * 1000.0
         try:
             full_answer = "".join(accumulated_text)
             citations_data = {
@@ -408,6 +490,29 @@ async def send_chat_message_stream(
                 snippet = payload.message[:35].strip()
                 conv.title = snippet + ("..." if len(payload.message) > 35 else "")
             await db.commit()
+
+            # Record final streaming usage event
+            source_count = len(terminal_metadata.get("source_citations", [])) if terminal_metadata else 0
+            await record_usage_event(
+                db=db,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                api_key_id=principal.api_key_id,
+                auth_type=principal.auth_type,
+                request_id=req_id,
+                event_type="chat_stream",
+                endpoint=request.url.path,
+                http_method=request.method,
+                status_code=200,
+                latency_ms=stream_latency,
+                provider=terminal_metadata.get("llm_provider") if terminal_metadata else None,
+                model=terminal_metadata.get("llm_model") if terminal_metadata else None,
+                input_tokens=terminal_metadata.get("input_tokens") if terminal_metadata else None,
+                output_tokens=terminal_metadata.get("output_tokens") if terminal_metadata else None,
+                total_tokens=terminal_metadata.get("total_tokens") if terminal_metadata else None,
+                source_count=source_count,
+                conversation_id=conversation_id,
+            )
         except Exception as persist_err:
             logger.warning(f"Failed to persist streamed assistant message: {persist_err}")
 
@@ -433,14 +538,13 @@ async def send_chat_message_stream(
 async def rename_conversation(
     conversation_id: int,
     payload: ConversationUpdate,
-    tenant: Tenant = Depends(get_current_tenant),
-    current_user: User = Depends(get_current_user),
+    principal: RequestPrincipal = Depends(get_request_principal),
     db: AsyncSession = Depends(get_db)
 ):
     """Rename a conversation title, strictly validating tenant ownership."""
     stmt = select(Conversation).where(
         Conversation.id == conversation_id,
-        Conversation.tenant_id == tenant.id
+        Conversation.tenant_id == principal.tenant_id
     )
     res = await db.execute(stmt)
     conv = res.scalar_one_or_none()
@@ -470,14 +574,13 @@ async def rename_conversation(
 )
 async def delete_conversation(
     conversation_id: int,
-    tenant: Tenant = Depends(get_current_tenant),
-    current_user: User = Depends(get_current_user),
+    principal: RequestPrincipal = Depends(get_request_principal),
     db: AsyncSession = Depends(get_db)
 ):
     """Permanently delete a conversation session and all its messages."""
     stmt = select(Conversation).where(
         Conversation.id == conversation_id,
-        Conversation.tenant_id == tenant.id
+        Conversation.tenant_id == principal.tenant_id
     )
     res = await db.execute(stmt)
     conv = res.scalar_one_or_none()
@@ -498,6 +601,7 @@ async def delete_conversation(
 )
 async def get_public_chatbot_config(
     tenant_slug: str,
+    persona_id: int | None = None,
     db: AsyncSession = Depends(get_db)
 ):
     """Returns public chatbot branding for website widget embedding without authentication."""
@@ -514,13 +618,64 @@ async def get_public_chatbot_config(
     cfg_res = await db.execute(cfg_stmt)
     config = cfg_res.scalar_one_or_none()
 
+    profile = None
+    active_persona = None
+    try:
+        profile, active_persona = await AIProfileService.get_or_create_default_profile(
+            db=db, tenant_id=tenant.id, tenant_name=tenant.name
+        )
+        if persona_id:
+            p_stmt = select(Persona).where(Persona.id == persona_id, Persona.tenant_id == tenant.id)
+            p_res = await db.execute(p_stmt)
+            req_p = p_res.scalar_one_or_none()
+            if req_p:
+                active_persona = req_p
+    except Exception as prof_err:
+        logger.warning(f"AI Profile resolution notice for public config: {prof_err}")
+
+    bot_name = active_persona.name if active_persona else (config.name if config else "Assistant")
+    bot_role = active_persona.role if active_persona else "Knowledge Support"
+    tone = active_persona.tone if active_persona else (config.tone if config else "professional")
+    
+    if config and config.welcome_message and config.welcome_message != "Hello! How can I help you today?":
+        welcome_msg = config.welcome_message
+    elif active_persona:
+        welcome_msg = f"Hello! I am {active_persona.name}, your {active_persona.role}. How can I assist you today?"
+    else:
+        welcome_msg = "Hello! How can I help you today?"
+
+    # Fetch all available personas for this tenant to allow persona selection in the widget
+    p_all_stmt = (
+        select(Persona)
+        .where(Persona.tenant_id == tenant.id)
+        .order_by(Persona.is_default.desc(), Persona.id.asc())
+    )
+    p_all_res = await db.execute(p_all_stmt)
+    tenant_personas = p_all_res.scalars().all()
+
+    available_personas_data = [
+        {
+            "id": p.id,
+            "name": p.name,
+            "role": p.role,
+            "tone": p.tone,
+            "is_default": p.is_default,
+        }
+        for p in tenant_personas
+    ]
+
     return {
         "tenant_name": tenant.name,
         "tenant_slug": tenant.slug,
-        "name": config.name if config else "Assistant",
+        "name": bot_name,
+        "role": bot_role,
         "avatar_url": config.avatar_url if config else None,
-        "welcome_message": config.welcome_message if config else "Hello! How can I help you today?",
-        "tone": config.tone if config else "professional"
+        "welcome_message": welcome_msg,
+        "tone": tone,
+        "persona_id": active_persona.id if active_persona else None,
+        "persona_name": active_persona.name if active_persona else None,
+        "persona_role": active_persona.role if active_persona else None,
+        "available_personas": available_personas_data,
     }
 
 
@@ -548,9 +703,24 @@ async def public_chat_message(
     cfg_res = await db.execute(cfg_stmt)
     config = cfg_res.scalar_one_or_none()
 
-    top_k = config.default_top_k if config else 4
-    max_hops = config.default_max_hops if config else 2
-    tone = config.tone if config else "professional"
+    profile = None
+    active_persona = None
+    try:
+        profile, active_persona = await AIProfileService.get_or_create_default_profile(
+            db=db, tenant_id=tenant.id, tenant_name=tenant.name
+        )
+        if payload.persona_id:
+            p_stmt = select(Persona).where(Persona.id == payload.persona_id, Persona.tenant_id == tenant.id)
+            p_res = await db.execute(p_stmt)
+            req_p = p_res.scalar_one_or_none()
+            if req_p:
+                active_persona = req_p
+    except Exception as prof_err:
+        logger.warning(f"AI Profile resolution notice for public chat: {prof_err}")
+
+    top_k = profile.retrieval_policy.get("topK", 4) if profile else (config.default_top_k if config else 4)
+    max_hops = profile.retrieval_policy.get("maxGraphDepth", 2) if profile else (config.default_max_hops if config else 2)
+    tone = active_persona.tone if active_persona else (config.tone if config else "professional")
     sys_prompt = config.system_prompt if config else None
     temperature = config.temperature if config else 0.2
 
@@ -568,6 +738,9 @@ async def public_chat_message(
         custom_system_prompt=sys_prompt,
         gemini_api_key=config.gemini_api_key if config else None,
         tenant_name=tenant.name,
+        openai_api_key=config.openai_api_key if config else None,
+        ai_profile=profile,
+        persona=active_persona,
     )
 
     return rag_response
@@ -596,9 +769,24 @@ async def public_chat_message_stream(
     cfg_res = await db.execute(cfg_stmt)
     config = cfg_res.scalar_one_or_none()
 
-    top_k = config.default_top_k if config else 4
-    max_hops = config.default_max_hops if config else 2
-    tone = config.tone if config else "professional"
+    profile = None
+    active_persona = None
+    try:
+        profile, active_persona = await AIProfileService.get_or_create_default_profile(
+            db=db, tenant_id=tenant.id, tenant_name=tenant.name
+        )
+        if payload.persona_id:
+            p_stmt = select(Persona).where(Persona.id == payload.persona_id, Persona.tenant_id == tenant.id)
+            p_res = await db.execute(p_stmt)
+            req_p = p_res.scalar_one_or_none()
+            if req_p:
+                active_persona = req_p
+    except Exception as prof_err:
+        logger.warning(f"AI Profile resolution notice for public chat stream: {prof_err}")
+
+    top_k = profile.retrieval_policy.get("topK", 4) if profile else (config.default_top_k if config else 4)
+    max_hops = profile.retrieval_policy.get("maxGraphDepth", 2) if profile else (config.default_max_hops if config else 2)
+    tone = active_persona.tone if active_persona else (config.tone if config else "professional")
     sys_prompt = config.system_prompt if config else None
     temperature = config.temperature if config else 0.2
 
@@ -618,6 +806,9 @@ async def public_chat_message_stream(
                 custom_system_prompt=sys_prompt,
                 gemini_api_key=config.gemini_api_key if config else None,
                 tenant_name=tenant.name,
+                openai_api_key=config.openai_api_key if config else None,
+                ai_profile=profile,
+                persona=active_persona,
             ):
                 if event["type"] == "token":
                     token_data = json.dumps({"text": event["text"]})
@@ -641,3 +832,94 @@ async def public_chat_message_stream(
             "X-Accel-Buffering": "no",
         }
     )
+
+
+@router.post(
+    "/query",
+    response_model=RAGQueryResponse,
+    summary="Direct GraphRAG query endpoint for API keys and programmatic clients"
+)
+async def direct_chat_query(
+    payload: RAGQueryRequest,
+    request: Request,
+    principal: RequestPrincipal = Depends(get_request_principal),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Direct query endpoint accepting either Developer API Keys (X-API-Key) or JWT tokens.
+    Executes hybrid GraphRAG search and returns a grounded answer with citations.
+    """
+    if principal.is_api_key and "chat:read" not in principal.scopes and "*" not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key missing required scope 'chat:read'"
+        )
+
+    tenant = principal.tenant
+
+    effective_persona_id = payload.persona_id or principal.persona_id
+    profile = None
+    active_persona = None
+    try:
+        profile, active_persona = await AIProfileService.get_or_create_default_profile(
+            db=db, tenant_id=tenant.id, tenant_name=tenant.name
+        )
+        if effective_persona_id:
+            p_stmt = select(Persona).where(Persona.id == effective_persona_id, Persona.tenant_id == tenant.id)
+            p_res = await db.execute(p_stmt)
+            req_p = p_res.scalar_one_or_none()
+            if req_p:
+                active_persona = req_p
+    except Exception as prof_err:
+        logger.warning(f"AI Profile resolution notice in direct query: {prof_err}")
+
+    cfg_stmt = select(ChatbotConfig).where(ChatbotConfig.tenant_id == tenant.id)
+    cfg_res = await db.execute(cfg_stmt)
+    config = cfg_res.scalar_one_or_none()
+
+    top_k = payload.top_k_chunks or (profile.retrieval_policy.get("topK", 4) if profile else (config.default_top_k if config else 4))
+    max_hops = payload.max_graph_hops or (profile.retrieval_policy.get("maxGraphDepth", 2) if profile else (config.default_max_hops if config else 2))
+    tone = active_persona.tone if active_persona else (config.tone if config else "professional")
+    sys_prompt = config.system_prompt if config else None
+    temperature = payload.temperature if payload.temperature is not None else (config.temperature if config else 0.2)
+
+    rag_response = await RAGPipelineService.answer_query(
+        db=db,
+        tenant_id=tenant.id,
+        query=payload.query,
+        top_k_chunks=top_k,
+        max_graph_hops=max_hops,
+        temperature=temperature,
+        source_id=payload.source_id,
+        persona_tone=tone,
+        custom_system_prompt=sys_prompt,
+        gemini_api_key=config.gemini_api_key if config else None,
+        tenant_name=tenant.name,
+        openai_api_key=config.openai_api_key if config else None,
+        ai_profile=profile,
+        persona=active_persona,
+    )
+
+    req_id = getattr(request.state, "request_id", "req_unknown")
+    latency = getattr(request.state, "latency_ms", rag_response.execution_time_ms)
+    await record_usage_event(
+        db=db,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        api_key_id=principal.api_key_id,
+        auth_type=principal.auth_type,
+        request_id=req_id,
+        event_type="chat_query",
+        endpoint=request.url.path,
+        http_method=request.method,
+        status_code=200,
+        latency_ms=latency,
+        provider=getattr(rag_response, "llm_provider", None),
+        model=getattr(rag_response, "llm_model", None),
+        input_tokens=getattr(rag_response, "input_tokens", None),
+        output_tokens=getattr(rag_response, "output_tokens", None),
+        total_tokens=getattr(rag_response, "total_tokens", None),
+        source_count=len(rag_response.source_citations),
+    )
+
+    return rag_response

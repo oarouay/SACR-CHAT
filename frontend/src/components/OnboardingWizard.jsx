@@ -173,38 +173,53 @@ export default function OnboardingWizard({ initialTenantName = '', onComplete, o
     setErrorMsg('');
 
     try {
+      const resolvedCompany = companyName.trim() || initialTenantName || 'Enterprise Workspace';
       const payload = {
-        company_name: companyName.trim() || initialTenantName || 'Enterprise Workspace',
-        industry,
-        company_description: companyDescription.trim() || `Enterprise organization operating in ${industry}`,
-        products: products.length > 0 ? products : ['Core Platform'],
-        services: [],
-        terminology: terminologyList,
-        primary_purposes: selectedPurposes,
-        custom_purpose: customPurpose.trim() || null,
-        example_questions: exampleQuestions,
-        target_audiences: selectedAudiences.length > 0 ? selectedAudiences : ['All Employees'],
-        technical_level: technicalLevel,
-        audience_notes: audienceNotes.trim() || null,
-        verbosity,
-        tone,
-        step_by_step: stepByStep,
-        define_specialized_terms: defineSpecializedTerms,
-        include_examples: includeExamples,
-        highlight_warnings: highlightWarnings,
-        grounding_mode: groundingMode,
-        allow_prior_knowledge: allowPriorKnowledge,
-        uncertainty_disclosure: uncertaintyDisclosure,
-        source_hierarchy: sourceRanking.map((s, idx) => ({
-          source_type: s.type,
-          rank: idx + 1,
-          weight: Math.round((1.0 - idx * 0.1) * 10) / 10
-        })),
-        conflict_strategy: conflictStrategy,
-        citations_required: citationsRequired,
-        citation_granularity: citationGranularity,
-        graph_reasoning_enabled: graphReasoningEnabled,
-        max_graph_depth: maxGraphDepth
+        step1_company: {
+          companyName: resolvedCompany,
+          industry,
+          companyDescription: companyDescription.trim() || `Enterprise organization operating in ${industry}`,
+          products: products.length > 0 ? products : ['Core Platform'],
+          services: [],
+          terminology: terminologyList
+        },
+        step2_purpose: {
+          selectedPurposes: selectedPurposes.length > 0 ? selectedPurposes : ['internal_search'],
+          customPurpose: customPurpose.trim() || null,
+          exampleQuestions: exampleQuestions
+        },
+        step3_audience: {
+          primaryAudience: selectedAudiences.length > 0 ? selectedAudiences.join(', ') : 'Mixed',
+          technicalLevel: technicalLevel || 'Intermediate'
+        },
+        step4_style: {
+          responseStyle: verbosity || 'balanced',
+          tone: tone || 'professional',
+          stepByStep: Boolean(stepByStep),
+          defineSpecializedTerms: Boolean(defineSpecializedTerms),
+          includeExamples: Boolean(includeExamples),
+          warnings: Boolean(highlightWarnings),
+          relatedDocSuggestions: true
+        },
+        step5_evidence: {
+          mode: groundingMode || 'strict',
+          uncertaintyDisclosure: Boolean(uncertaintyDisclosure)
+        },
+        step6_authority: {
+          rankedSourceTypes: sourceRanking.map((s, idx) => ({
+            rank: idx + 1,
+            type: s.type,
+            label: s.label || '',
+            weight: Math.round((1.0 - idx * 0.1) * 10) / 10
+          }))
+        },
+        step7_citations: {
+          citationsRequired: Boolean(citationsRequired),
+          citationGranularity: citationGranularity || 'paragraph',
+          includeExcerpt: true,
+          graphReasoningPathVisibility: Boolean(graphReasoningEnabled)
+        },
+        createDefaultPersona: true
       };
 
       const result = await aiProfilesApi.submitOnboarding(payload);
@@ -232,17 +247,29 @@ export default function OnboardingWizard({ initialTenantName = '', onComplete, o
   return (
     <div style={{ maxWidth: '920px', margin: '0 auto', padding: '24px 20px', width: '100%' }}>
       {/* Top Header */}
-      <div style={{ marginBottom: '28px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-primary)', fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: '6px' }}>
-          <Sparkles size={14} />
-          <span>Organization AI Profile Onboarding</span>
+      <div style={{ marginBottom: '28px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px' }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-primary)', fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', marginBottom: '6px' }}>
+            <Sparkles size={14} />
+            <span>Organization AI Profile Onboarding</span>
+          </div>
+          <h1 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em', margin: 0 }}>
+            Configure Enterprise Intelligence Policies
+          </h1>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px', marginTop: '6px', lineHeight: 1.5, margin: 0 }}>
+            Answer a few business-level questions to configure your organization-specific AI Profile, multi-persona governance, source authority ranking, and GraphRAG grounding policies.
+          </p>
         </div>
-        <h1 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em', margin: 0 }}>
-          Configure Enterprise Intelligence Policies
-        </h1>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px', marginTop: '6px', lineHeight: 1.5 }}>
-          Answer a few business-level questions to configure your organization-specific AI Profile, multi-persona governance, source authority ranking, and GraphRAG grounding policies.
-        </p>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="btn-ghost"
+            style={{ fontSize: '12.5px', color: 'var(--text-muted)', whiteSpace: 'nowrap', paddingTop: '4px' }}
+          >
+            Skip for now →
+          </button>
+        )}
       </div>
 
       {/* Progress Step Indicator */}

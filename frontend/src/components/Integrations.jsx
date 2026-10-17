@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { chatbotApi, publicWidgetApi } from '../api/client';
+import { chatbotApi, publicWidgetApi, personasApi } from '../api/client';
 import MarkdownMessage from './MarkdownMessage';
+import ApiKeyManager from './ApiKeyManager';
+import ObservabilityDashboard from './ObservabilityDashboard';
 import { 
   Code2, 
   Copy, 
   Check, 
-  MessageSquare, 
+  MessageCircle, 
   ShieldCheck, 
   ExternalLink, 
   Send, 
@@ -18,13 +20,20 @@ import {
   Moon,
   Sparkles,
   HelpCircle,
-  CornerDownLeft
+  CornerDownLeft,
+  KeyRound,
+  Activity
 } from 'lucide-react';
 
 export default function Integrations({ tenant }) {
+  const [activeTab, setActiveTab] = useState('api-keys'); // 'api-keys' | 'observability' | 'widget'
   const [primaryColor, setPrimaryColor] = useState('#4F5BD5');
   const [position, setPosition] = useState('right');
   const [copied, setCopied] = useState(false);
+
+  // Persona configuration states
+  const [personas, setPersonas] = useState([]);
+  const [selectedPersonaId, setSelectedPersonaId] = useState('');
 
   // Verification status
   const [verifying, setVerifying] = useState(false);
@@ -37,7 +46,7 @@ export default function Integrations({ tenant }) {
   const [previewMessages, setPreviewMessages] = useState([
     { 
       role: 'assistant', 
-      content: 'Hello! I am your AI assistant. How can I help you today? Ask me anything about your documents or knowledge graph.',
+      content: 'Hello! How can I help you today? Feel free to ask any question.',
       isStreaming: false,
       metadata: null
     }
@@ -53,14 +62,35 @@ export default function Integrations({ tenant }) {
 
   const tenantSlug = tenant?.slug || 'your-organization';
 
+  // Load tenant personas on mount
+  useEffect(() => {
+    let isMounted = true;
+    async function loadPersonas() {
+      try {
+        const list = await personasApi.list();
+        if (isMounted && Array.isArray(list)) {
+          setPersonas(list);
+        }
+      } catch (err) {
+        console.warn('Could not load personas for Integrations page:', err);
+      }
+    }
+    loadPersonas();
+    return () => { isMounted = false; };
+  }, []);
+
+  const activePreviewPersonaId = selectedPersonaId ? parseInt(selectedPersonaId, 10) : (personas.find(p => p.is_default)?.id || null);
+  const activePreviewPersona = personas.find(p => p.id === activePreviewPersonaId) || personas.find(p => p.is_default) || null;
+
   // Environment-correct production script snippet
   const hostOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://your-domain.com';
-  const widgetScriptCode = `<!-- OmniGraph Knowledge Widget -->
+  const personaAttr = selectedPersonaId ? `\n  data-persona-id="${selectedPersonaId}"` : '';
+  const widgetScriptCode = `<!-- OmniGraph Website Chat Widget -->
 <script 
   src="${hostOrigin}/widget.js" 
   data-tenant-slug="${tenantSlug}"
   data-primary-color="${primaryColor}"
-  data-position="${position}"
+  data-position="${position}"${personaAttr}
   defer>
 </script>`;
 
@@ -92,14 +122,16 @@ export default function Integrations({ tenant }) {
     setVerifying(true);
     setVerificationStatus(null);
     try {
-      const config = await publicWidgetApi.getConfig(tenantSlug);
+      const pId = selectedPersonaId ? parseInt(selectedPersonaId, 10) : null;
+      const config = await publicWidgetApi.getConfig(tenantSlug, pId);
       if (config) {
         setVerificationStatus('verified');
-        setVerificationMsg(`Connected to "${config.name || 'Assistant'}" on tenant "${config.tenant_slug}".`);
+        const pLabel = config.persona_name ? ` using "${config.persona_name}"` : '';
+        setVerificationMsg(`Widget connection verified${pLabel}. Ready for website visitors.`);
       }
     } catch (err) {
       setVerificationStatus('failed');
-      setVerificationMsg(err.message || 'Endpoint verification request failed');
+      setVerificationMsg('Unable to reach chat widget service. Please check your network connection.');
     } finally {
       setVerifying(false);
     }
@@ -149,6 +181,7 @@ export default function Integrations({ tenant }) {
         history,
         {
           signal: abortCtrl.signal,
+          personaId: activePreviewPersonaId || undefined,
           onToken: (token) => {
             streamBufferRef.current += token;
             if (!throttleTimeoutRef.current) {
@@ -229,31 +262,131 @@ export default function Integrations({ tenant }) {
 
   return (
     <div className="workspace-page">
-      {/* Workspace Header */}
-      <div className="workspace-header">
-        <div>
-          <h1 className="workspace-title">
-            <Code2 size={20} color="var(--accent-primary)" />
-            <span>Web Widget Integration</span>
-          </h1>
-          <p className="workspace-subtitle">
-            Configure, preview, and deploy an isolated, embeddable website assistant powered by your GraphRAG cluster.
-          </p>
+      {/* Top Level Sub-Nav Switcher */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: '12px',
+        marginBottom: '24px',
+        borderBottom: '1px solid var(--border-hairline)',
+        paddingBottom: '16px'
+      }}>
+        <div style={{
+          display: 'inline-flex',
+          gap: '6px',
+          padding: '4px',
+          background: 'var(--bg-surface-2)',
+          borderRadius: '10px',
+          border: '1px solid var(--border-hairline)'
+        }}>
+          <button
+            type="button"
+            onClick={() => setActiveTab('api-keys')}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '7px 14px',
+              borderRadius: '7px',
+              fontSize: '13px',
+              fontWeight: activeTab === 'api-keys' ? 600 : 500,
+              background: activeTab === 'api-keys' ? 'var(--bg-surface-1)' : 'transparent',
+              color: activeTab === 'api-keys' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              border: activeTab === 'api-keys' ? '1px solid var(--border-subtle)' : '1px solid transparent',
+              boxShadow: activeTab === 'api-keys' ? '0 1px 3px rgba(0,0,0,0.18)' : 'none',
+              cursor: 'pointer',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            <KeyRound size={15} color={activeTab === 'api-keys' ? 'var(--accent-primary)' : 'currentColor'} />
+            <span>API Keys</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('observability')}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '7px 14px',
+              borderRadius: '7px',
+              fontSize: '13px',
+              fontWeight: activeTab === 'observability' ? 600 : 500,
+              background: activeTab === 'observability' ? 'var(--bg-surface-1)' : 'transparent',
+              color: activeTab === 'observability' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              border: activeTab === 'observability' ? '1px solid var(--border-subtle)' : '1px solid transparent',
+              boxShadow: activeTab === 'observability' ? '0 1px 3px rgba(0,0,0,0.18)' : 'none',
+              cursor: 'pointer',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            <Activity size={15} color={activeTab === 'observability' ? 'var(--accent-primary)' : 'currentColor'} />
+            <span>Usage & Analytics</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('widget')}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '7px 14px',
+              borderRadius: '7px',
+              fontSize: '13px',
+              fontWeight: activeTab === 'widget' ? 600 : 500,
+              background: activeTab === 'widget' ? 'var(--bg-surface-1)' : 'transparent',
+              color: activeTab === 'widget' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              border: activeTab === 'widget' ? '1px solid var(--border-subtle)' : '1px solid transparent',
+              boxShadow: activeTab === 'widget' ? '0 1px 3px rgba(0,0,0,0.18)' : 'none',
+              cursor: 'pointer',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            <Code2 size={15} color={activeTab === 'widget' ? 'var(--accent-primary)' : 'currentColor'} />
+            <span>Website Chat Widget</span>
+          </button>
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 420px', gap: '24px', alignItems: 'start' }}>
-        {/* Left Column: Configuration & Installation Instructions */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          {/* Section 1: Appearance & Placement */}
+      {activeTab === 'api-keys' && (
+        <ApiKeyManager tenant={tenant} />
+      )}
+
+      {activeTab === 'observability' && (
+        <ObservabilityDashboard tenant={tenant} />
+      )}
+
+      {activeTab === 'widget' && (
+        <>
+          {/* Workspace Header */}
+          <div className="workspace-header">
+            <div>
+              <h1 className="workspace-title">
+                <MessageCircle size={20} color="var(--accent-primary)" />
+                <span>Website Chat Widget</span>
+              </h1>
+              <p className="workspace-subtitle">
+                Add an AI chat assistant to your website to answer visitor questions accurately, 24/7.
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 420px', gap: '24px', alignItems: 'start' }}>
+            {/* Left Column: Configuration & Installation Instructions */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Section 1: Appearance & Assistant */}
           <div className="calm-panel" style={{ padding: '20px' }}>
             <h2 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '14px' }}>
-              1. Appearance & Position
+              1. Styling & Assistant Selection
             </h2>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
               <div>
-                <label>Brand Accent Color</label>
+                <label>Widget Color</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <input
                     type="color"
@@ -268,7 +401,7 @@ export default function Integrations({ tenant }) {
                       cursor: 'pointer',
                       background: 'transparent'
                     }}
-                    aria-label="Pick widget accent color"
+                    aria-label="Pick widget color"
                   />
                   <input
                     type="text"
@@ -280,24 +413,42 @@ export default function Integrations({ tenant }) {
               </div>
 
               <div>
-                <label>Screen Float Position</label>
+                <label>Position on Page</label>
                 <select value={position} onChange={(e) => setPosition(e.target.value)}>
                   <option value="right">Bottom Right (Standard)</option>
                   <option value="left">Bottom Left</option>
                 </select>
               </div>
+
+              <div style={{ gridColumn: 'span 2' }}>
+                <label>Assistant Profile</label>
+                <select 
+                  value={selectedPersonaId} 
+                  onChange={(e) => setSelectedPersonaId(e.target.value)}
+                  aria-label="Assistant Profile"
+                >
+                  <option value="">Default Assistant (Standard)</option>
+                  {personas.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.role}){p.is_default ? ' ★ Default' : ''}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  Select the personality and knowledge profile that greets your website visitors.
+                </div>
+              </div>
             </div>
           </div>
 
-          {/* Section 2: Access & Knowledge Scope Notice */}
+          {/* Section 2: Privacy & Data Safety */}
           <div className="calm-panel" style={{ padding: '20px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
               <ShieldCheck size={16} color="var(--accent-primary)" />
-              <h2 style={{ fontSize: '14px', fontWeight: 600 }}>2. Public Knowledge Scope Boundary</h2>
+              <h2 style={{ fontSize: '14px', fontWeight: 600 }}>2. Privacy & Data Safety</h2>
             </div>
             <p style={{ fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: 1.55 }}>
-              The embeddable widget communicates with the unauthenticated visitor endpoint (<code>/api/v1/chat/public/{tenantSlug}/message</code>).
-              It retrieves answers exclusively from documents ingested within your active organization <strong>{tenant?.name}</strong>.
+              Your website assistant only shares information from the content and documents you have uploaded for <strong>{tenant?.name}</strong>. Your account settings, private keys, and administrative data are never accessible to visitors.
             </p>
           </div>
 
@@ -305,9 +456,9 @@ export default function Integrations({ tenant }) {
           <div className="calm-panel" style={{ padding: '20px' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
               <div>
-                <h2 style={{ fontSize: '14px', fontWeight: 600 }}>3. Install on Your Website</h2>
+                <h2 style={{ fontSize: '14px', fontWeight: 600 }}>3. Add to Your Website</h2>
                 <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                  Paste this snippet before the closing <code>&lt;/body&gt;</code> tag of your web pages.
+                  Copy and paste this snippet before the closing <code>&lt;/body&gt;</code> tag on any page where you want the chat assistant to appear.
                 </p>
               </div>
 
@@ -317,7 +468,7 @@ export default function Integrations({ tenant }) {
                 style={{ padding: '6px 12px', fontSize: '12px' }}
               >
                 {copied ? <Check size={13} /> : <Copy size={13} />}
-                <span>{copied ? 'Copied' : 'Copy Snippet'}</span>
+                <span>{copied ? 'Copied' : 'Copy Code'}</span>
               </button>
             </div>
 
@@ -341,23 +492,23 @@ export default function Integrations({ tenant }) {
             <div style={{ marginTop: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid var(--border-hairline)', paddingTop: '14px' }}>
               <div>
                 <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                  Installation Verification
+                  Connection Check
                 </div>
                 <div style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
                   {verificationStatus === 'verified'
                     ? verificationMsg
                     : verificationStatus === 'failed'
                     ? verificationMsg
-                    : 'Verify that your tenant’s public widget endpoint is responsive.'}
+                    : 'Check if your chat assistant is online and ready for visitors.'}
                 </div>
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 {verificationStatus === 'verified' && (
-                  <span className="status-pill ready">Verified Live</span>
+                  <span className="status-pill ready">Connected</span>
                 )}
                 {verificationStatus === 'failed' && (
-                  <span className="status-pill failed">Check Failed</span>
+                  <span className="status-pill failed">Connection Issue</span>
                 )}
 
                 <button
@@ -368,7 +519,7 @@ export default function Integrations({ tenant }) {
                   style={{ padding: '6px 12px', fontSize: '12px' }}
                 >
                   <RefreshCw size={12} className={verifying ? 'spin' : ''} />
-                  <span>{verifying ? 'Pinging...' : 'Verify Endpoint'}</span>
+                  <span>{verifying ? 'Checking...' : 'Check Connection'}</span>
                 </button>
               </div>
             </div>
@@ -380,10 +531,10 @@ export default function Integrations({ tenant }) {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
             <div>
               <div style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 600, letterSpacing: '0.04em' }}>
-                Interactive Preview
+                Live Preview
               </div>
               <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                Click the launcher bubble to test the widget live.
+                Click the chat bubble to test your assistant.
               </div>
             </div>
 
@@ -394,7 +545,7 @@ export default function Integrations({ tenant }) {
               title="Toggle preview frame theme"
             >
               {previewTheme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
-              <span>{previewTheme === 'dark' ? 'Light Preview' : 'Dark Preview'}</span>
+              <span>{previewTheme === 'dark' ? 'Light Theme' : 'Dark Theme'}</span>
             </button>
           </div>
 
@@ -437,7 +588,7 @@ export default function Integrations({ tenant }) {
                   fontFamily: 'var(--font-mono)'
                 }}
               >
-                https://your-website.com
+                https://yourwebsite.com
               </span>
             </div>
 
@@ -483,7 +634,7 @@ export default function Integrations({ tenant }) {
                     flexShrink: 0
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0, flex: 1 }}>
                     <div
                       style={{
                         width: '32px',
@@ -495,43 +646,60 @@ export default function Integrations({ tenant }) {
                         alignItems: 'center',
                         justifyContent: 'center',
                         color: '#FFFFFF',
-                        boxShadow: '0 2px 6px rgba(0,0,0,0.3)'
+                        fontWeight: 700,
+                        fontSize: '12px',
+                        boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
+                        flexShrink: 0
                       }}
                     >
-                      <Bot size={17} />
+                      {activePreviewPersona?.name ? activePreviewPersona.name.substring(0, 2).toUpperCase() : <Bot size={17} />}
                     </div>
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: '13px', color: previewTheme === 'dark' ? '#F8FAFC' : '#0F172A', lineHeight: 1.2 }}>
-                        AI Assistant
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{
+                        fontWeight: 600,
+                        fontSize: '13px',
+                        color: previewTheme === 'dark' ? '#F8FAFC' : '#0F172A',
+                        lineHeight: 1.2,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {activePreviewPersona?.name || 'Customer Support'}
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginTop: '2px' }}>
-                        <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10B981', boxShadow: '0 0 6px #10B981' }} />
-                        <span style={{ fontSize: '10.5px', color: previewTheme === 'dark' ? '#94A3B8' : '#64748B' }}>
-                          GraphRAG Active
-                        </span>
+                      <div style={{
+                        fontSize: '11px',
+                        color: previewTheme === 'dark' ? '#94A3B8' : '#64748B',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        marginTop: '2px'
+                      }}>
+                        {activePreviewPersona?.role || 'Here to help'}
                       </div>
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => setPreviewOpen(false)}
-                    style={{
-                      width: '26px',
-                      height: '26px',
-                      borderRadius: '6px',
-                      background: previewTheme === 'dark' ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.05)',
-                      border: 'none',
-                      color: previewTheme === 'dark' ? '#94A3B8' : '#64748B',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      transition: 'background 0.15s ease'
-                    }}
-                    aria-label="Close preview chat"
-                  >
-                    <X size={14} />
-                  </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                    <button
+                      onClick={() => setPreviewOpen(false)}
+                      style={{
+                        width: '26px',
+                        height: '26px',
+                        borderRadius: '6px',
+                        background: previewTheme === 'dark' ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.05)',
+                        border: 'none',
+                        color: previewTheme === 'dark' ? '#94A3B8' : '#64748B',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        transition: 'background 0.15s ease'
+                      }}
+                      aria-label="Close preview chat"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
                 </div>
 
                 {/* Messages Feed */}
@@ -547,6 +715,28 @@ export default function Integrations({ tenant }) {
                   }}
                 >
                   {previewMessages.map((msg, idx) => (
+                    msg.role === 'system' ? (
+                      <div
+                        key={idx}
+                        style={{
+                          alignSelf: 'center',
+                          margin: '3px 0',
+                          display: 'flex',
+                          justifyContent: 'center'
+                        }}
+                      >
+                        <span style={{
+                          fontSize: '11px',
+                          color: previewTheme === 'dark' ? '#94A3B8' : '#64748B',
+                          background: previewTheme === 'dark' ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.04)',
+                          border: previewTheme === 'dark' ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(0, 0, 0, 0.08)',
+                          padding: '3px 10px',
+                          borderRadius: '9999px'
+                        }}>
+                          <MarkdownMessage content={msg.content} />
+                        </span>
+                      </div>
+                    ) : (
                     <div
                       key={idx}
                       style={{
@@ -648,6 +838,7 @@ export default function Integrations({ tenant }) {
                         </div>
                       )}
                     </div>
+                  )
                   ))}
                   <div ref={messagesEndRef} />
                 </div>
@@ -721,9 +912,9 @@ export default function Integrations({ tenant }) {
                   width: '48px',
                   height: '48px',
                   borderRadius: '24px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
+                  display: 'grid',
+                  placeItems: 'center',
+                  padding: 0,
                   color: '#FFFFFF',
                   boxShadow: `0 8px 20px -3px ${primaryColor}88, 0 4px 12px rgba(0, 0, 0, 0.3)`,
                   border: '1px solid rgba(255, 255, 255, 0.15)',
@@ -734,37 +925,26 @@ export default function Integrations({ tenant }) {
                 title={previewOpen ? 'Close Assistant' : 'Open Assistant'}
                 aria-label="Toggle assistant widget"
               >
-                {!previewOpen && (
-                  <span
-                    style={{
-                      position: 'absolute',
-                      top: '1px',
-                      right: '1px',
-                      width: '11px',
-                      height: '11px',
-                      borderRadius: '50%',
-                      background: '#10B981',
-                      border: '2px solid #0B0E14',
-                      boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.35)'
-                    }}
-                  />
-                )}
                 <div
                   style={{
+                    gridArea: '1 / 1',
                     transform: previewOpen ? 'rotate(90deg)' : 'rotate(0deg)',
                     transition: 'transform 0.22s cubic-bezier(0.16, 1, 0.3, 1)',
                     display: 'flex',
                     alignItems: 'center',
-                    justifyContent: 'center'
+                    justifyContent: 'center',
+                    pointerEvents: 'none'
                   }}
                 >
-                  {previewOpen ? <X size={18} /> : <MessageSquare size={18} />}
+                  {previewOpen ? <X size={20} /> : <MessageCircle size={20} />}
                 </div>
               </button>
             </div>
           </div>
         </aside>
       </div>
-    </div>
-  );
+    </>
+  )}
+</div>
+);
 }

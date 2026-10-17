@@ -5,17 +5,19 @@ import SourceManager from './components/SourceManager';
 import GraphExplorer from './components/GraphExplorer';
 import Assistant from './components/Assistant';
 import AIProfileAdmin from './components/AIProfileAdmin';
+import OnboardingWizard from './components/OnboardingWizard';
 import Integrations from './components/Integrations';
 import AuthModal from './components/AuthModal';
 import { ConfirmProvider } from './components/ConfirmModal';
 import { authApi, getStoredToken } from './api/client';
-import { ShieldCheck, Database, RefreshCw } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('ask');
   const [tenant, setTenant] = useState(null);
   const [user, setUser] = useState(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [initializing, setInitializing] = useState(true);
 
   // Cross-page navigation context (e.g. asking about a specific source)
@@ -59,8 +61,6 @@ export default function App() {
           console.warn('Stored token expired or invalid:', err);
           authApi.logout();
         }
-      } else {
-        setAuthModalOpen(true);
       }
       setInitializing(false);
     };
@@ -68,17 +68,20 @@ export default function App() {
     initAuth();
   }, []);
 
-  const handleAuthSuccess = (meData) => {
+  const handleAuthSuccess = (meData, options = {}) => {
     setUser(meData.user);
     setTenant(meData.tenant);
     setAuthModalOpen(false);
+    if (options.isNewRegistration) {
+      setShowOnboarding(true);
+    }
   };
 
   const handleLogout = () => {
     authApi.logout();
     setUser(null);
     setTenant(null);
-    setAuthModalOpen(true);
+    setShowOnboarding(false);
   };
 
   const handleNavigateToAsk = (scope) => {
@@ -86,6 +89,34 @@ export default function App() {
     setActiveTab('ask');
   };
 
+  // 1. Initial Loading Splash
+  if (initializing) {
+    return (
+      <div style={{ height: '100vh', width: '100vw', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-canvas)' }}>
+        <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
+          <RefreshCw size={26} className="spin" style={{ margin: '0 auto 12px auto', color: 'var(--accent-primary)' }} />
+          <div style={{ fontSize: '13px', fontWeight: 500, letterSpacing: '-0.01em' }}>Connecting to GraphRAG Cluster...</div>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Unauthenticated State: Dedicated High-Craft Authentication & Onboarding View
+  if (!tenant) {
+    return (
+      <ConfirmProvider>
+        <AuthModal
+          isOpen={true}
+          isStandalone={true}
+          onAuthSuccess={handleAuthSuccess}
+          theme={theme}
+          setTheme={setTheme}
+        />
+      </ConfirmProvider>
+    );
+  }
+
+  // 3. Authenticated Workspace Shell
   return (
     <ConfirmProvider>
       <div className="app-shell">
@@ -98,46 +129,24 @@ export default function App() {
           theme={theme}
           setTheme={setTheme}
           onLogout={handleLogout}
+          onOpenAuthModal={() => setAuthModalOpen(true)}
         />
 
         {/* Main Workspace Canvas */}
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
-          {initializing ? (
-            <div style={{ margin: 'auto', textAlign: 'center', color: 'var(--text-muted)' }}>
-              <RefreshCw size={24} className="spin" style={{ margin: '0 auto 12px auto', color: 'var(--accent-primary)' }} />
-              <div style={{ fontSize: '13px' }}>Connecting to GraphRAG Cluster...</div>
-            </div>
-          ) : !tenant ? (
-            <div style={{ margin: 'auto', textAlign: 'center', maxWidth: '420px', padding: '40px 20px' }}>
-              <div
-                style={{
-                  width: '48px',
-                  height: '48px',
-                  borderRadius: '12px',
-                  background: 'var(--bg-surface-2)',
-                  border: '1px solid var(--border-subtle)',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: 'var(--accent-primary)',
-                  marginBottom: '16px'
+          {showOnboarding ? (
+            <div style={{ flex: 1, overflowY: 'auto', background: 'var(--bg-canvas)' }}>
+              <OnboardingWizard
+                initialTenantName={tenant?.name || ''}
+                onComplete={() => {
+                  setShowOnboarding(false);
+                  setActiveTab('ai-profile');
                 }}
-              >
-                <ShieldCheck size={24} />
-              </div>
-              <h2 style={{ fontSize: '18px', fontWeight: 600, marginBottom: '8px' }}>
-                Organization Authentication Required
-              </h2>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '13px', lineHeight: 1.6, marginBottom: '24px' }}>
-                Sign in to your organization or register a new tenant workspace to access dedicated vector embeddings, Neo4j graphs, and RAG pipelines.
-              </p>
-              <button 
-                onClick={() => setAuthModalOpen(true)}
-                className="btn btn-primary"
-                style={{ padding: '9px 20px', fontSize: '13px' }}
-              >
-                Sign In or Register Workspace
-              </button>
+                onCancel={() => {
+                  setShowOnboarding(false);
+                  setActiveTab('ask');
+                }}
+              />
             </div>
           ) : (
             <>
@@ -163,9 +172,10 @@ export default function App() {
           )}
         </main>
 
-        {/* Authentication Modal */}
+        {/* In-app Organization Switch / Tenant Modal */}
         <AuthModal
           isOpen={authModalOpen}
+          isStandalone={false}
           onClose={() => setAuthModalOpen(false)}
           onAuthSuccess={handleAuthSuccess}
         />

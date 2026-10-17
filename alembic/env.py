@@ -15,7 +15,9 @@ import app.models.user  # noqa: F401
 import app.models.source  # noqa: F401
 import app.models.chunk  # noqa: F401
 import app.models.chatbot  # noqa: F401
-import app.models.chat  # noqa: F401
+import app.models.conversation  # noqa: F401
+import app.models.api_key  # noqa: F401
+import app.models.usage  # noqa: F401
 
 config = context.config
 

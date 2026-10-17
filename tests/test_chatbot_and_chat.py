@@ -244,3 +244,82 @@ async def test_url_crawling_and_ssrf_protection(client: AsyncClient, db_session:
         get_src = await client.get(f"/api/v1/sources/{source_data['id']}", headers=headers)
         assert get_src.status_code == 200
         assert get_src.json()["status"] == "indexed"
+
+
+@pytest.mark.asyncio
+async def test_public_widget_persona_integration(client: AsyncClient, db_session: AsyncSession):
+    """
+    Verify public widget endpoints (/chat/public/{tenant_slug}/config & /message):
+    1. Returns tenant default active persona branding & tone in public config.
+    2. Overrides branding when custom ?persona_id= is provided.
+    3. Handles visitor chat messages using the resolved persona and returns persona_name.
+    """
+    # 1. Register Tenant
+    reg_res = await client.post(
+        "/api/v1/auth/register-tenant",
+        json={
+            "tenant_name": "WidgetPersonaCorp",
+            "tenant_slug": "widget-persona",
+            "admin_email": "admin@widgetpersona.com",
+            "admin_password": "Password123!",
+            "admin_name": "Admin WP",
+        },
+    )
+    assert reg_res.status_code == 201
+    headers = {"Authorization": f"Bearer {reg_res.json()['access_token']}"}
+
+    # 2. Create custom Persona "Customer Success Hero"
+    p_res = await client.post(
+        "/api/v1/personas",
+        headers=headers,
+        json={
+            "name": "Customer Success Hero",
+            "role": "Senior Customer Success Specialist",
+            "purpose": "Provide warm, responsive guidance to website visitors",
+            "tone": "enthusiastic",
+            "verbosity": "balanced",
+            "expertise_level": "intermediate",
+            "step_by_step": True,
+            "define_specialized_terms": False,
+            "include_examples": True,
+            "is_default": False
+        }
+    )
+    assert p_res.status_code == 201
+    hero_persona = p_res.json()
+    hero_id = hero_persona["id"]
+
+    # 3. GET public config without persona_id -> default persona / config returned
+    cfg_res = await client.get("/api/v1/chat/public/widget-persona/config")
+    assert cfg_res.status_code == 200
+    cfg_data = cfg_res.json()
+    assert "name" in cfg_data
+    assert "role" in cfg_data
+    assert cfg_data["tenant_slug"] == "widget-persona"
+    assert "available_personas" in cfg_data
+    assert isinstance(cfg_data["available_personas"], list)
+    assert len(cfg_data["available_personas"]) >= 2
+    assert any(p["id"] == hero_id and p["name"] == "Customer Success Hero" for p in cfg_data["available_personas"])
+
+    # 4. GET public config with ?persona_id={hero_id} -> returns Hero persona details
+    hero_cfg_res = await client.get(f"/api/v1/chat/public/widget-persona/config?persona_id={hero_id}")
+    assert hero_cfg_res.status_code == 200
+    hero_cfg = hero_cfg_res.json()
+    assert hero_cfg["name"] == "Customer Success Hero"
+    assert hero_cfg["role"] == "Senior Customer Success Specialist"
+    assert hero_cfg["tone"] == "enthusiastic"
+    assert hero_cfg["persona_id"] == hero_id
+    assert "Customer Success Hero" in hero_cfg["welcome_message"]
+
+    # 5. POST public message with persona_id -> synthesized with Customer Success Hero persona
+    msg_res = await client.post(
+        "/api/v1/chat/public/widget-persona/message",
+        json={
+            "message": "Hello! How do I get started?",
+            "history": [],
+            "persona_id": hero_id
+        }
+    )
+    assert msg_res.status_code == 200
+    msg_data = msg_res.json()
+    assert msg_data["persona_name"] == "Customer Success Hero"

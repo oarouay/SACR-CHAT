@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # Sub-policy Schemas
@@ -174,6 +174,95 @@ class OnboardingSubmissionRequest(BaseModel):
     step6_authority: Optional[OnboardingStep6Authority] = None
     step7_citations: Optional[OnboardingStep7Citations] = None
     createDefaultPersona: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_flat_submission(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        # If already formatted with step1_company, pass through
+        if "step1_company" in data:
+            return data
+
+        # Normalize flat fields from wizard or alternative clients
+        company_name = data.get("company_name") or data.get("companyName") or ""
+        industry = data.get("industry") or "Enterprise"
+        description = data.get("company_description") or data.get("companyDescription") or f"Enterprise in {industry}"
+        products = data.get("products") or []
+        services = data.get("services") or []
+        terminology = data.get("terminology") or []
+
+        step1 = {
+            "companyName": company_name,
+            "industry": industry,
+            "companyDescription": description,
+            "products": products,
+            "services": services,
+            "terminology": terminology,
+        }
+
+        step2 = {
+            "selectedPurposes": data.get("primary_purposes") or data.get("selectedPurposes") or ["internal_search"],
+            "customPurpose": data.get("custom_purpose") or data.get("customPurpose"),
+            "exampleQuestions": data.get("example_questions") or data.get("exampleQuestions") or [],
+        }
+
+        audiences = data.get("target_audiences") or data.get("primaryAudience") or ["Mixed"]
+        primary_aud = audiences[0] if isinstance(audiences, list) and audiences else str(audiences)
+        step3 = {
+            "primaryAudience": primary_aud,
+            "technicalLevel": data.get("technical_level") or data.get("technicalLevel") or "Intermediate",
+        }
+
+        step4 = {
+            "responseStyle": data.get("verbosity") or data.get("responseStyle") or "balanced",
+            "tone": data.get("tone") or "professional",
+            "stepByStep": data.get("step_by_step", True) if "step_by_step" in data else data.get("stepByStep", True),
+            "defineSpecializedTerms": data.get("define_specialized_terms", True) if "define_specialized_terms" in data else data.get("defineSpecializedTerms", True),
+            "includeExamples": data.get("include_examples", True) if "include_examples" in data else data.get("includeExamples", True),
+            "warnings": data.get("highlight_warnings", True) if "highlight_warnings" in data else data.get("warnings", True),
+            "relatedDocSuggestions": data.get("related_doc_suggestions", True) if "related_doc_suggestions" in data else data.get("relatedDocSuggestions", True),
+        }
+
+        step5 = {
+            "mode": data.get("grounding_mode") or data.get("mode") or "strict",
+            "uncertaintyDisclosure": data.get("uncertainty_disclosure", True) if "uncertainty_disclosure" in data else data.get("uncertaintyDisclosure", True),
+        }
+
+        raw_sources = data.get("source_hierarchy") or data.get("rankedSourceTypes")
+        step6 = None
+        if raw_sources:
+            ranked_sources = []
+            for s in raw_sources:
+                if isinstance(s, dict):
+                    ranked_sources.append({
+                        "rank": s.get("rank", 1),
+                        "type": s.get("source_type") or s.get("type", "policy"),
+                        "label": s.get("label", ""),
+                        "weight": s.get("weight", 1.0)
+                    })
+            if ranked_sources:
+                step6 = {"rankedSourceTypes": ranked_sources}
+
+        step7 = {
+            "citationsRequired": data.get("citations_required", True) if "citations_required" in data else data.get("citationsRequired", True),
+            "citationGranularity": data.get("citation_granularity") or data.get("citationGranularity") or "paragraph",
+            "includeExcerpt": data.get("include_excerpt", True) if "include_excerpt" in data else data.get("includeExcerpt", True),
+            "graphReasoningPathVisibility": data.get("graph_reasoning_enabled", True) if "graph_reasoning_enabled" in data else data.get("graphReasoningPathVisibility", True),
+        }
+
+        return {
+            "step1_company": step1,
+            "step2_purpose": step2,
+            "step3_audience": step3,
+            "step4_style": step4,
+            "step5_evidence": step5,
+            "step6_authority": step6,
+            "step7_citations": step7,
+            "createDefaultPersona": data.get("createDefaultPersona", True)
+        }
+
 
 
 # Profile CRUD and Lifecycle Schemas

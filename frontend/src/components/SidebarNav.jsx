@@ -14,7 +14,8 @@ import {
   ShieldCheck,
   Building2,
   ChevronDown,
-  Sparkles
+  Sparkles,
+  Plus
 } from 'lucide-react';
 
 export default function SidebarNav({
@@ -24,7 +25,8 @@ export default function SidebarNav({
   user,
   theme,
   setTheme,
-  onLogout
+  onLogout,
+  onOpenAuthModal
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [showAccountMenu, setShowAccountMenu] = useState(false);
@@ -35,7 +37,7 @@ export default function SidebarNav({
     { id: 'explore', label: 'Explore', icon: Network, description: 'Entities & graph links' },
     { id: 'ai-profile', label: 'AI Profile', icon: Sparkles, description: 'Enterprise policies & personas' },
     { id: 'assistant', label: 'Assistant', icon: Sliders, description: 'Behavior & model tuning' },
-    { id: 'integrations', label: 'Integrations', icon: Code2, description: 'Website widget deploy' },
+    { id: 'integrations', label: 'Integrations', icon: Code2, description: 'API keys, usage & widget' },
   ];
 
   const cycleTheme = () => {
@@ -310,6 +312,28 @@ export default function SidebarNav({
                     slug: {tenant.slug}
                   </div>
                 </div>
+
+                {onOpenAuthModal && (
+                  <button
+                    onClick={() => {
+                      setShowAccountMenu(false);
+                      onOpenAuthModal();
+                    }}
+                    className="btn-ghost"
+                    style={{
+                      width: '100%',
+                      justifyContent: 'flex-start',
+                      padding: '8px 10px',
+                      fontSize: '12px',
+                      color: 'var(--text-primary)',
+                      gap: '8px',
+                      borderRadius: '6px'
+                    }}
+                  >
+                    <Plus size={13} color="var(--accent-primary)" />
+                    <span>Switch / Register Workspace</span>
+                  </button>
+                )}
 
                 <button
                   onClick={() => {

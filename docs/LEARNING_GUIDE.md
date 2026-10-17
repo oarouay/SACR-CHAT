@@ -26,7 +26,9 @@
 16. [Pillar 14: Pipeline Performance & Latency Optimization Engine (The 5-Part Overhaul)](#16-pillar-14-pipeline-performance--latency-optimization-engine-the-5-part-overhaul)
 17. [Pillar 15: AI Profile Onboarding, Hierarchical Persona Engine & Runtime Governance](#17-pillar-15-ai-profile-onboarding-hierarchical-persona-engine--runtime-governance)
 18. [Pillar 16: Multi-Model Synthesizer Architecture & Resilient LLM Failover (OpenAI & Gemini)](#18-pillar-16-multi-model-synthesizer-architecture--resilient-llm-failover-openai--gemini)
-19. [Summary Table of Architectural Decisions & Tradeoffs](#19-summary-table-of-architectural-decisions--tradeoffs)
+19. [Pillar 17: Developer API Key Management, RBAC Scopes & Cryptographic Verification](#19-pillar-17-developer-api-key-management-rbac-scopes--cryptographic-verification)
+20. [Pillar 18: Usage Tracking, Observability & Analytics Engine](#20-pillar-18-usage-tracking-observability--analytics-engine)
+21. [Summary Table of Architectural Decisions & Tradeoffs](#21-summary-table-of-architectural-decisions--tradeoffs)
 
 ---
 
@@ -655,6 +657,46 @@ Public website visitors do not possess administrative JWT credentials. To facili
 * The server resolves the active tenant via its unique slug, enforces active status checks, and executes `RAGPipelineService.answer_query` strictly scoped to that tenant's vector and graph boundaries.
 * Administrative endpoints (document deletion, chunk re-indexing, user management) remain strictly protected by `Depends(get_current_user)`.
 
+### Script-Level Persona Binding & Visitor Governance
+Enterprise clients require their customer-facing chat assistant to embody a specific organizational persona (e.g., "Customer Support", "Sales Specialist", or "Technical Advisor"):
+1. **Script Attribute Binding**:
+   - The embed script supports an optional `data-persona-id` attribute:
+     ```html
+     <script 
+       src="https://your-domain.com/widget.js" 
+       data-tenant-slug="acme-corp" 
+       data-primary-color="#4F5BD5"
+       data-position="right"
+       data-persona-id="3"
+       defer>
+     </script>
+     ```
+   - When the widget boots, `initBotConfig()` queries `GET /api/v1/chat/public/{tenant_slug}/config?persona_id=3`.
+   - The backend validates tenant ownership, returns the persona's customized title, role, and welcome greeting, and synchronizes subsequent queries.
+   - If omitted, the widget automatically adopts the tenant's default active persona.
+2. **Visitor Persona Locking Rationale**:
+   - **Why Visitors Cannot Change Personas**: Allowing visitors to manually toggle personas was tested and rejected as an architectural anti-pattern:
+     - **Brand & Compliance Risk**: Organizations must guarantee that public visitors interact with an assistant governed by the exact tone, policies, and knowledge scope intended for that specific channel or landing page.
+     - **Cognitive Overhead**: Everyday website visitors seeking customer support were confused by internal AI persona definitions.
+     - **Enforcement**: Persona selection is strictly an administrative configuration choice, locking the visitor experience to the organization's intended brand identity.
+
+### Anti-UI-Slop & Client-Centric UX Architecture
+In accordance with ECC Anti-UI-Slop and Emil Kowalski design engineering principles, the widget and management interfaces adhere to a calm, high-trust visual language:
+1. **Elimination of Artificial "Active Status" Gimmicks**:
+   - Removed pulsing, glowing green status circles (`#10B981`) from both the launcher bubble and modal header.
+   - Removed artificial unread badges on the floating launcher.
+   - **Result**: A calm, centered, and dignified floating launcher that feels like a native utility rather than a noisy chat popup.
+2. **Translation of Technical Slop into Client-Friendly Terminology**:
+   - Business clients and website visitors are not required to possess a technical background. Internal database and machine learning jargon was systematically replaced with clear, accessible business terminology:
+     - *"GraphRAG Active"* / *"GraphRAG Verified"* $\rightarrow$ Replaced with clean role descriptions or *"Here to help"*.
+     - *"Powered by OmniGraph Multi-Tenant Knowledge RAG"* $\rightarrow$ *"Powered by OmniGraph"*.
+     - *"Public Knowledge Scope Boundary"* $\rightarrow$ *"Privacy & Data Safety"*.
+     - *"Unauthenticated visitor endpoint (/api/v1/...)"* $\rightarrow$ Plain English: *"Your assistant only answers questions using content uploaded for your organization."*
+     - *"Verify that your tenant's public widget endpoint is responsive"* $\rightarrow$ *"Connection Check: Check if your chat assistant is online and ready for visitors."*
+3. **Typing Animation & Stream Smoothing**:
+   - SSE streaming tokens are throttled via an animation buffer (35ms throttle) to simulate natural, fluid reading speed (Claude/ChatGPT-style) rather than jarring burst updates.
+   - Built-in graceful recovery for stream interruptions with automatic fallback to non-streaming POST queries.
+
 ---
 
 ## 14. Pillar 12: Interactive Graph Visualization with `vis-network` & Dual Retrieval UX
@@ -1122,7 +1164,198 @@ OmniGraph RAG features a unified synthesis abstraction (`BaseRAGSynthesizer`) im
 
 ---
 
-## 19. Summary Table of Architectural Decisions & Tradeoffs
+## 19. Pillar 17: Developer API Key Management, RBAC Scopes & Cryptographic Verification
+
+### The Enterprise Integration Challenge
+While administrative users interact with OmniGraph via the web dashboard using OAuth2/JWT tokens, enterprise clients require **programmatic access** for:
+- Automated backend ingestion pipelines (e.g. syncing internal CMS documents or nightly Confluence exports).
+- Custom mobile applications and internal support dashboards.
+- Autonomous agent pipelines (e.g., Slackbots, customer CRM webhooks, multi-agent frameworks).
+
+Directly issuing long-lived JWT user tokens for external integrations creates severe security liabilities: JWTs cannot be selectively revoked without invalidating the entire user session, lack fine-grained endpoint scopes, and leak user identities across automated processes.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ Developer API Key Architecture & Cryptographic Flow                    │
+├────────────────────────────────────────────────────────────────────────┤
+│ 1. Key Generation:                                                     │
+│    secrets.token_hex(32) ──► omni_live_9f8c...3a1e  (Returned Once!)  │
+│                                  │                                     │
+│ 2. Storage Separation:           ▼                                     │
+│    SHA-256 Hash ───────► key_hash: "e3b0c44298fc1c149afbf4c8996fb..."  │
+│    Prefix Masking ─────► key_prefix: "omni_live_", masked: "...3a1e"   │
+│                                                                        │
+│ 3. Request Verification (Dual Headers):                                │
+│    X-API-Key: omni_live_... OR Authorization: Bearer omni_live_...     │
+│              │                                                         │
+│              ▼                                                         │
+│    SHA-256(Raw Key) ──► Indexed DB Lookup (ix_tenant_api_keys_key_hash)│
+│              │                                                         │
+│              ▼                                                         │
+│    Validates: is_active=True, revoked_at IS NULL, expires_at > now()   │
+│              │                                                         │
+│              ▼                                                         │
+│    Scope Check: require_scope("chat:write") ──► 403 Forbidden if absent│
+│              │                                                         │
+│              ▼                                                         │
+│    Context Injection: (tenant_id, bound_persona_id, key_id)            │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Cryptographic Security & Zero-Leak Storage
+1. **High-Entropy Token Generation**:
+   - API keys utilize the prefix `omni_live_` followed by 32 bytes of cryptographically secure pseudorandom randomness generated via Python's standard `secrets.token_hex(32)`:
+     $$\text{Entropy} = 32 \text{ bytes} \times 8 \text{ bits/byte} = 256 \text{ bits of entropy}$$
+   - This provides computational immunity against brute-force guessing attacks ($2^{256}$ combinations).
+2. **One-Way SHA-256 Hashing**:
+   - The raw key is displayed to the user **exactly once** upon creation (`ApiKeyCreatedResponse`).
+   - The backend never stores the plaintext key. Instead, it computes and stores a cryptographic SHA-256 digest:
+     $$\text{key\_hash} = \text{SHA-256}(\text{raw\_key})$$
+   - Even in the catastrophic event of a database compromise or backup leak, attackers cannot derive the plaintext API keys.
+3. **Prefix & Mask Storage for Safe Identification**:
+   - To allow administrators to identify keys in the dashboard without compromising security, the database stores:
+     - `key_prefix`: e.g. `"omni_live_"` (enables fast environment routing and syntax verification).
+     - `masked_key`: e.g. `"omni_live_••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••4a9f"` (prefix + last 4 characters).
+
+---
+
+### Granular RBAC Scopes
+To enforce the Principle of Least Privilege, each API key is restricted to explicit scopes stored as a JSON array in the database:
+
+| Scope | Allowed Operations | Typical Use Case |
+| :--- | :--- | :--- |
+| `chat:read` | List conversations, inspect message history | Read-only compliance audit bots, historical log exporters |
+| `chat:write` | Send questions, execute hybrid GraphRAG queries, receive SSE streams | Customer-facing websites, mobile apps, Slackbot integrations |
+| `sources:read` | List ingested sources, view document metadata | Dashboard widgets, inventory sync jobs |
+| `sources:write` | Upload documents, trigger web crawls, delete sources | CI/CD automated ingestion, CMS webhook pipelines |
+
+#### Scope Enforcement Middleware
+FastAPI dependency injection enforces scope verification declaratively at the router layer:
+
+```python
+def require_scope(required_scope: str):
+    async def scope_checker(
+        auth: ApiKeyAuth = Depends(get_api_key_auth),
+    ) -> ApiKeyAuth:
+        if required_scope not in auth.scopes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"API key missing required scope: '{required_scope}'",
+            )
+        return auth
+    return scope_checker
+```
+
+---
+
+### Persona Binding via API Keys
+Automated integrations often serve specific operational functions (e.g., an e-commerce support webhook should always speak in a polite customer service tone, whereas an engineering API should answer strictly with code snippets).
+* **Architectural Innovation**: An API key can be explicitly linked to a `persona_id`.
+* **Automatic Context Injection**: When an external request authenticates with that key, the system automatically resolves the assigned persona's prompt invariants, role, tone, and guardrails without requiring the external client to pass persona IDs in request parameters.
+
+---
+
+### Atomic Rotation & Lifecycle Management
+1. **Atomic Key Rotation (`POST /api/v1/api-keys/{id}/rotate`)**:
+   - Generates a new cryptographically secure key with the exact same name, scopes, and persona binding.
+   - Atomically revokes the old key in a single database transaction, setting `revoked_at = utcnow()` and `is_active = False`.
+   - Eliminates race conditions and prevents orphaned keys during credential renewal.
+2. **Instant Soft Revocation (`DELETE /api/v1/api-keys/{id}`)**:
+   - Immediately invalidates the key while retaining historical audit logs and usage attribution.
+
+---
+
+## 20. Pillar 18: Usage Tracking, Observability & Analytics Engine
+
+### Purpose & Architecture
+In an enterprise multi-tenant SaaS platform, observability is essential for:
+1. **Multi-Tenant Metering & Quotas**: Tracking token consumption, query volume, and active user counts per tenant.
+2. **Performance Telemetry**: Monitoring average latency and error rates across endpoints.
+3. **Auditability**: Attributing requests to specific API keys or user accounts.
+
+To ensure telemetry collection never impacts user-facing query latency, usage recording is engineered as a **non-blocking asynchronous service**.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ Usage Tracking & Analytics Pipeline                                    │
+├────────────────────────────────────────────────────────────────────────┤
+│ Client Request                                                         │
+│       │                                                                │
+│       ▼                                                                │
+│ [FastAPI Endpoint] ──► Execute GraphRAG Pipeline (Embed + Graph + LLM) │
+│       │                                                                │
+│       ├─────────────────────────────────┐                              │
+│       ▼                                 ▼ (Background / Async)         │
+│ Send Client Response          [UsageService.record_usage]              │
+│ (Instant / Zero Latency)                │                              │
+│                                         ▼                              │
+│                         INSERT INTO usage_events                       │
+│                         - tenant_id, api_key_id, user_id               │
+│                         - endpoint, http_method, status_code           │
+│                         - input_tokens, output_tokens, total_tokens    │
+│                         - latency_ms, created_at                       │
+│                                         │                              │
+│ ┌───────────────────────────────────────┴────────────────────────────┐ │
+│ │ Analytics Aggregation Engine (GET /api/v1/analytics/tenant)        │ │
+│ │ - Total Messages, Direct API Requests, Token Breakdown             │ │
+│ │ - Active Users, Average Latency (ms), Error Count                  │ │
+│ │ - 7D / 30D / 90D Time-Series Bucketing (DATE(created_at))          │ │
+│ └────────────────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Database Schema (`UsageEvent`)
+The `usage_events` table captures comprehensive telemetry for every operational request:
+
+```python
+class UsageEvent(Base, TenantMixin):
+    __tablename__ = "usage_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    api_key_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("tenant_api_keys.id", ondelete="SET NULL"), nullable=True, index=True)
+    auth_type: Mapped[str] = mapped_column(String(32), default="jwt", nullable=False)
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    endpoint: Mapped[str] = mapped_column(String(255), nullable=False)
+    http_method: Mapped[str] = mapped_column(String(10), nullable=False)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    latency_ms: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    
+    # LLM execution & token metrics
+    provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    source_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    conversation_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+```
+
+---
+
+### Analytics Aggregation Engine
+The `analytics_service` exposes rolling aggregations via `GET /api/v1/analytics/tenant?from=...&to=...`:
+1. **Aggregated Core Metrics**:
+   - $\text{Total Messages} = \sum \mathbb{I}(\text{endpoint} \in \{\text{chat endpoints}\})$
+   - $\text{API Requests} = \sum \mathbb{I}(\text{api\_key\_id} \ne \text{NULL})$
+   - $\text{Tokens Consumed} = \sum \text{total\_tokens} \quad (\text{broken down into input vs. output})$
+   - $\text{Active Users} = |\text{DISTINCT } \text{user\_id}|$
+   - $\text{Average Latency} = \frac{1}{N} \sum_{i=1}^N \text{latency\_ms}_i$
+   - $\text{API Errors} = \sum \mathbb{I}(\text{status\_code} \ge 400)$
+2. **Time-Series Bucketing**:
+   - Groups records by calendar day (`DATE(timestamp)`) across selectable windows ($7$ days, $30$ days, $90$ days).
+   - Feeds interactive usage charts in the frontend dashboard, providing visibility into traffic spikes, token consumption trends, and system reliability.
+
+---
+
+## 21. Summary Table of Architectural Decisions & Tradeoffs
 
 | Component | Choice Made | Alternatives Considered | Why We Chose It |
 | :--- | :--- | :--- | :--- |
@@ -1147,9 +1380,15 @@ OmniGraph RAG features a unified synthesis abstraction (`BaseRAGSynthesizer`) im
 | **Source Authority Reranking**| **Composite Authority Scoring** ($S_{\text{retrieval}} \times W_{\text{authority}}$) | Pure cosine similarity | Ensures official regulatory policies mathematically outrank informal chat notes. |
 | **Citation Verification**| **Stable `[EV_#]` IDs + `ResponseValidator`** | Unstructured inline URL citations | Detects & strips fabricated citations; mathematically enforces zero cross-tenant leaks. |
 | **Multi-Model LLM Resilience**| **Dual Provider Engine** (Gemini 2.5 Flash + OpenAI GPT-4o) with failover | Single hardcoded provider | Resilient to rate-limit quotas, cloud outages, and customer vendor mandates. |
+| **API Key Storage & Verification**| **One-Way SHA-256 Hash + Masked Prefix Display** | Reversible encryption (AES), Plaintext storage | Zero-knowledge secret storage; protects credentials against database dumps; constant-time indexed lookup. |
+| **API Authorization Model** | **Fine-Grained RBAC Scopes** (`chat:*`, `sources:*`) | Single global API key permission | Enforces Principle of Least Privilege across automated bots, CI/CD pipelines, and webhooks. |
+| **Usage Tracking Architecture** | **Non-Blocking Asynchronous Relational Records** | Blocking inline inserts, Ephemeral Redis counters | Zero latency penalty on user queries; durable audit history; unified PostgreSQL analytics queries. |
+| **Public Widget Persona Governance**| **Admin-Enforced Script Binding** (`data-persona-id`) | Interactive visitor-facing persona dropdown | Guarantees brand consistency and compliance guardrails; prevents visitor confusion and prompt manipulation. |
+| **Widget Visual & Text UX** | **Calm Centered Launcher + Plain Business Language** | Gimmicky pulsing active dots, AI/DevOps jargon | Fosters visitor trust, accessibility for non-technical users, and zero visual slop. |
 | **Chat Memory** | Relational `Conversation` & `ChatMessage` | In-memory Redis store | Durable session logs, verifiable historical citations, ACID integrity. |
 | **Web Ingestion** | Async `httpx` + SSRF IP Filter | Selenium / Playwright headless browsers | Lightweight, fast text extraction, zero browser binary overhead. |
 | **Frontend Framework** | React 19 + Vite 8 SPA | Next.js, Remix, Vanilla HTML/JS | Behind-auth dashboard requires no SSR/SEO; instant HMR; zero second Node server needed. |
 | **Widget Isolation** | Pure Shadow DOM (`attachShadow`) | Standard `<iframe>`, Global script injection | 100% immune to host CSS/Tailwind collisions; full responsive freedom without iframe resize glitches. |
 | **Graph Visualizer** | `vis-network` (ForceAtlas2 physics) | D3.js, Cytoscape.js, Three.js 3D | Built-in spring physics simulation; smooth zoom/pan; rich node click events. |
+
 

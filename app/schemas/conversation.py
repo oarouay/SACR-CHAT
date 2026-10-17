@@ -88,4 +88,5 @@ class ConversationRead(BaseModel):
 class PublicChatMessageRequest(BaseModel):
     message: str = Field(..., min_length=1, description="Visitor question")
     history: Optional[List[Dict[str, str]]] = Field(default_factory=list, description="Prior conversation turns")
+    persona_id: Optional[int] = Field(None, description="Optional persona ID to direct this message to")
 

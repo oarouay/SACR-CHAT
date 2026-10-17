@@ -4,6 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.dependencies.api_key import RequestPrincipal, get_request_principal
 from app.dependencies.auth import get_current_user
 from app.dependencies.tenant import get_current_tenant
 from app.models.chunk import DocumentChunk
@@ -28,11 +29,17 @@ router = APIRouter(prefix="/sources", tags=["Data Sources & Document Ingestion"]
     summary="List all knowledge sources for current tenant"
 )
 async def list_sources(
-    tenant: Tenant = Depends(get_current_tenant),
-    current_user: User = Depends(get_current_user),
+    principal: RequestPrincipal = Depends(get_request_principal),
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve all data sources scoped strictly to the current tenant with accurate chunk counts."""
+    if principal.is_api_key and "sources:read" not in principal.scopes and "*" not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key missing required scope 'sources:read'"
+        )
+    tenant = principal.tenant
+
     count_subq = (
         select(DocumentChunk.source_id, func.count(DocumentChunk.id).label("chunk_count"))
         .where(DocumentChunk.tenant_id == tenant.id)
@@ -66,13 +73,25 @@ async def list_sources(
 async def upload_source(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(..., description="Document file to upload (PDF, TXT, DOCX, CSV, MD)"),
-    tenant: Tenant = Depends(get_current_tenant),
-    current_user: User = Depends(get_current_user),
+    principal: RequestPrincipal = Depends(get_request_principal),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Upload a document into tenant-isolated storage and asynchronously trigger the ingestion pipeline.
     """
+    if principal.is_api_key and "sources:write" not in principal.scopes and "*" not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key missing required scope 'sources:write'"
+        )
+    tenant = principal.tenant
+    owner_id = principal.user_id
+    if not owner_id and principal.api_key:
+        owner_id = principal.api_key.created_by_user_id
+    if not owner_id:
+        user_stmt = select(User.id).where(User.tenant_id == tenant.id).limit(1)
+        owner_id = (await db.execute(user_stmt)).scalar_one_or_none() or 1
+
     relative_path, file_size, safe_name = await save_tenant_file(tenant.id, file)
 
     source = Source(
@@ -83,7 +102,7 @@ async def upload_source(
         file_size=file_size,
         file_path=relative_path,
         tenant_id=tenant.id,
-        owner_id=current_user.id
+        owner_id=owner_id
     )
     db.add(source)
     await db.commit()
@@ -103,13 +122,25 @@ async def upload_source(
 async def ingest_raw_text(
     payload: RawTextCreate,
     background_tasks: BackgroundTasks,
-    tenant: Tenant = Depends(get_current_tenant),
-    current_user: User = Depends(get_current_user),
+    principal: RequestPrincipal = Depends(get_request_principal),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Directly ingest raw text (e.g. FAQs, company policies) and asynchronously trigger chunking.
     """
+    if principal.is_api_key and "sources:write" not in principal.scopes and "*" not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key missing required scope 'sources:write'"
+        )
+    tenant = principal.tenant
+    owner_id = principal.user_id
+    if not owner_id and principal.api_key:
+        owner_id = principal.api_key.created_by_user_id
+    if not owner_id:
+        user_stmt = select(User.id).where(User.tenant_id == tenant.id).limit(1)
+        owner_id = (await db.execute(user_stmt)).scalar_one_or_none() or 1
+
     byte_size = len(payload.content.encode("utf-8"))
     source = Source(
         name=payload.name,
@@ -119,7 +150,7 @@ async def ingest_raw_text(
         file_size=byte_size,
         raw_content=payload.content,
         tenant_id=tenant.id,
-        owner_id=current_user.id
+        owner_id=owner_id
     )
     db.add(source)
     await db.commit()
@@ -139,14 +170,26 @@ async def ingest_raw_text(
 async def crawl_url(
     payload: URLCrawlRequest,
     background_tasks: BackgroundTasks,
-    tenant: Tenant = Depends(get_current_tenant),
-    current_user: User = Depends(get_current_user),
+    principal: RequestPrincipal = Depends(get_request_principal),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Crawls a public web page, extracts readable text with SSRF protection,
     and enqueues it for vector embedding and knowledge graph indexing.
     """
+    if principal.is_api_key and "sources:write" not in principal.scopes and "*" not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key missing required scope 'sources:write'"
+        )
+    tenant = principal.tenant
+    owner_id = principal.user_id
+    if not owner_id and principal.api_key:
+        owner_id = principal.api_key.created_by_user_id
+    if not owner_id:
+        user_stmt = select(User.id).where(User.tenant_id == tenant.id).limit(1)
+        owner_id = (await db.execute(user_stmt)).scalar_one_or_none() or 1
+
     try:
         page_title, text_content = await fetch_and_clean_url(payload.url)
     except ValueError as e:
@@ -170,7 +213,7 @@ async def crawl_url(
         file_size=len(text_content.encode("utf-8")),
         raw_content=text_content,
         tenant_id=tenant.id,
-        owner_id=current_user.id
+        owner_id=owner_id
     )
     db.add(source)
     await db.commit()
@@ -187,11 +230,16 @@ async def crawl_url(
 )
 async def get_source(
     source_id: int,
-    tenant: Tenant = Depends(get_current_tenant),
-    current_user: User = Depends(get_current_user),
+    principal: RequestPrincipal = Depends(get_request_principal),
     db: AsyncSession = Depends(get_db)
 ):
     """Fetch single source details, strictly validating tenant ownership."""
+    if principal.is_api_key and "sources:read" not in principal.scopes and "*" not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API key missing required scope 'sources:read'"
+        )
+    tenant = principal.tenant
     stmt = select(Source).where(Source.id == source_id, Source.tenant_id == tenant.id)
     result = await db.execute(stmt)
     source = result.scalar_one_or_none()

@@ -666,3 +666,63 @@ async def test_ai_profile_and_persona_api_lifecycle(client: AsyncClient, db_sess
     assert "why_answered_this_way" in test_result
     assert test_result["active_persona_name"] == "Threat Analyst Persona"
     assert test_result["why_answered_this_way"]["groundingMode"] == "strict"
+
+
+@pytest.mark.asyncio
+async def test_onboarding_wizard_flat_payload_support(client: AsyncClient, db_session: AsyncSession):
+    """
+    TDD Test: Verifies that POST /ai-profiles/onboarding accepts a flat payload
+    and normalizes it into the 7-step structure without failing with 422.
+    """
+    tenant = Tenant(name="Acme Robotics", slug="acme-robotics", is_active=True)
+    db_session.add(tenant)
+    await db_session.commit()
+    await db_session.refresh(tenant)
+
+    admin = User(
+        tenant_id=tenant.id,
+        email="admin@acmerobotics.com",
+        hashed_password=get_password_hash("AdminPass123!"),
+        role="admin",
+        is_active=True
+    )
+    db_session.add(admin)
+    await db_session.commit()
+    await db_session.refresh(admin)
+
+    token = create_access_token(subject=admin.id, tenant_id=tenant.id, extra_claims={"role": "admin"})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    flat_payload = {
+        "company_name": "Acme Robotics",
+        "industry": "Robotics & Automation",
+        "company_description": "Industrial warehouse automation systems",
+        "products": ["BotArm X1", "Rover Nav"],
+        "terminology": [{"term": "SLAM", "definition": "Simultaneous Localization and Mapping"}],
+        "primary_purposes": ["troubleshooting", "internal_search"],
+        "example_questions": ["How do I recalibrate the LiDAR sensor?"],
+        "target_audiences": ["Robotics Engineers"],
+        "technical_level": "Advanced",
+        "verbosity": "balanced",
+        "tone": "technical",
+        "step_by_step": True,
+        "define_specialized_terms": True,
+        "include_examples": True,
+        "highlight_warnings": True,
+        "grounding_mode": "strict",
+        "allow_prior_knowledge": False,
+        "uncertainty_disclosure": True,
+        "source_hierarchy": [
+            {"source_type": "policy", "rank": 1, "weight": 1.5},
+            {"source_type": "official_doc", "rank": 2, "weight": 1.3}
+        ],
+        "citations_required": True,
+        "citation_granularity": "paragraph",
+        "graph_reasoning_enabled": True
+    }
+
+    res = await client.post("/api/v1/ai-profiles/onboarding", json=flat_payload, headers=headers)
+    assert res.status_code == 201
+    data = res.json()
+    assert data["organization_data"]["companyName"] == "Acme Robotics"
+    assert data["evidence_policy"]["mode"] == "strict"

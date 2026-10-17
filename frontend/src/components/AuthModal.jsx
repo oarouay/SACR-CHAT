@@ -1,18 +1,34 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { authApi } from '../api/client';
-import { X, Building2, Lock, Mail, User, AlertCircle, Sparkles } from 'lucide-react';
+import {
+  Eye,
+  EyeOff,
+  X,
+  Sun,
+  Moon,
+  Laptop,
+  Check
+} from 'lucide-react';
 
-export default function AuthModal({ isOpen, onClose, onAuthSuccess }) {
-  const [mode, setMode] = useState('login'); // 'login' or 'register'
+export default function AuthModal({
+  isOpen,
+  onClose,
+  onAuthSuccess,
+  isStandalone = false,
+  theme,
+  setTheme
+}) {
+  const [mode, setMode] = useState('login'); // 'login' | 'register'
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
-  // Login form state
+  // Sign In form fields
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginSlug, setLoginSlug] = useState('');
 
-  // Register form state
+  // Register form fields
   const [tenantName, setTenantName] = useState('');
   const [tenantSlug, setTenantSlug] = useState('');
   const [tenantDesc, setTenantDesc] = useState('');
@@ -20,292 +36,512 @@ export default function AuthModal({ isOpen, onClose, onAuthSuccess }) {
   const [adminEmail, setAdminEmail] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
 
-  if (!isOpen) return null;
+  const firstInputRef = useRef(null);
 
+  // Keyboard navigation: Escape key closes modal (only when not standalone)
+  useEffect(() => {
+    if (!isOpen || isStandalone) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && onClose) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, isStandalone, onClose]);
+
+  // Autofocus when mode changes
+  useEffect(() => {
+    if (isOpen || isStandalone) {
+      const timer = setTimeout(() => {
+        firstInputRef.current?.focus();
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [mode, isOpen, isStandalone]);
+
+  if (!isOpen && !isStandalone) return null;
+
+  // Auto-generate clean slug from organization name
   const handleNameChange = (e) => {
     const val = e.target.value;
     setTenantName(val);
-    const generated = val.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-    setTenantSlug(generated);
+    const slug = val
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+    setTenantSlug(slug);
   };
 
+  // Demo credentials fill
+  const handleFillDemo = (e) => {
+    e.preventDefault();
+    setMode('login');
+    setLoginEmail('admin@acme.com');
+    setLoginPassword('StrongPassword123!');
+    setLoginSlug('acme');
+    setError('');
+  };
+
+  // Form submission: Sign In
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
     setError('');
+
+    const trimmedEmail = loginEmail.trim().toLowerCase();
+    const trimmedSlug = loginSlug.trim().toLowerCase();
+
+    if (!trimmedEmail) {
+      setError('Please provide your work email.');
+      return;
+    }
+    if (!loginPassword) {
+      setError('Please enter your password.');
+      return;
+    }
+
     setLoading(true);
     try {
-      await authApi.login(loginEmail, loginPassword, loginSlug);
+      await authApi.login(trimmedEmail, loginPassword, trimmedSlug || undefined);
       const meData = await authApi.getMe();
-      onAuthSuccess(meData);
-      onClose();
+      onAuthSuccess(meData, { isNewRegistration: false });
+      if (onClose) onClose();
     } catch (err) {
-      setError(err.message || 'Login failed. Please check your credentials.');
+      setError(err.message || 'Incorrect email or password.');
     } finally {
       setLoading(false);
     }
   };
 
+  // Form submission: Register Tenant & Initial Admin
   const handleRegisterSubmit = async (e) => {
     e.preventDefault();
     setError('');
+
+    const cleanName = tenantName.trim();
+    const cleanSlug = tenantSlug.trim().toLowerCase();
+    const cleanAdminName = adminName.trim();
+    const cleanEmail = adminEmail.trim().toLowerCase();
+
+    if (!cleanName) {
+      setError('Please enter your organization name.');
+      return;
+    }
+    if (!cleanSlug || !/^[a-z0-9-]+$/.test(cleanSlug)) {
+      setError('Workspace identifier must contain only lowercase letters, numbers, and hyphens.');
+      return;
+    }
+    if (!cleanAdminName) {
+      setError('Please enter the administrator name.');
+      return;
+    }
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setError('Please provide a valid work email.');
+      return;
+    }
+    if (!adminPassword || adminPassword.length < 6) {
+      setError('Password must be at least 6 characters.');
+      return;
+    }
+
     setLoading(true);
     try {
       await authApi.registerTenant({
-        tenant_name: tenantName,
-        tenant_slug: tenantSlug,
-        tenant_description: tenantDesc,
-        admin_name: adminName,
-        admin_email: adminEmail,
+        tenant_name: cleanName,
+        tenant_slug: cleanSlug,
+        tenant_description: tenantDesc.trim() || undefined,
+        admin_name: cleanAdminName,
+        admin_email: cleanEmail,
         admin_password: adminPassword,
       });
       const meData = await authApi.getMe();
-      onAuthSuccess(meData);
-      onClose();
+      onAuthSuccess(meData, { isNewRegistration: true, tenantName: cleanName });
+      if (onClose) onClose();
     } catch (err) {
-      setError(err.message || 'Registration failed.');
+      setError(err.message || 'Registration failed. The workspace identifier or email may already be registered.');
     } finally {
       setLoading(false);
     }
   };
 
-  return (
-    <div style={{
-      position: 'fixed',
-      inset: 0,
-      background: 'rgba(0, 0, 0, 0.8)',
-      backdropFilter: 'blur(8px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 1000,
-      padding: '20px'
-    }}>
-      <div 
-        className="hairline-card"
-        style={{
-          width: '100%',
-          maxWidth: '440px',
-          padding: '24px',
-          position: 'relative',
-          background: 'var(--bg-surface-1)',
-          boxShadow: 'var(--shadow-lg)'
-        }}
-      >
-        <button
-          onClick={onClose}
-          className="btn-ghost"
-          style={{
-            position: 'absolute',
-            top: '16px',
-            right: '16px',
-            padding: '4px',
-            borderRadius: '4px'
-          }}
-        >
-          <X size={16} />
-        </button>
+  // Theme Toggle Helper
+  const cycleTheme = () => {
+    if (!setTheme) return;
+    if (theme === 'dark') setTheme('light');
+    else if (theme === 'light') setTheme('system');
+    else setTheme('dark');
+  };
 
-        {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-          <div style={{
-            width: '36px',
-            height: '36px',
-            borderRadius: '9px',
-            background: 'var(--bg-surface-2)',
-            border: '1px solid var(--border-subtle)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: 'var(--accent-primary)',
-            marginBottom: '10px'
-          }}>
-            <Building2 size={18} />
-          </div>
-          <h2 style={{ fontSize: '17px', fontWeight: 600, color: 'var(--text-primary)' }}>
-            {mode === 'login' ? 'Sign In to Workspace' : 'Onboard New Tenant'}
-          </h2>
-          <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '3px' }}>
-            {mode === 'login' 
-              ? 'Access organization vector chunks and knowledge graph.' 
-              : 'Deploy a tenant-isolated GraphRAG cluster.'}
-          </p>
+  // Form Contents
+  const formContent = (
+    <div className="auth-form-wrap">
+      {/* Mobile Top Brand (hidden on desktop) */}
+      <div className="auth-mobile-brand">
+        <div className="auth-brand-logo">OG</div>
+        <div>
+          <div className="auth-brand-title">OmniGraph</div>
+          <div className="auth-brand-desc">Enterprise knowledge infrastructure</div>
         </div>
+      </div>
 
-        {/* Segmented Control */}
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '18px' }}>
-          <div className="segmented-control" style={{ width: '100%' }}>
-            <button
-              type="button"
-              onClick={() => { setMode('login'); setError(''); }}
-              className={mode === 'login' ? 'active' : ''}
-              style={{ flex: 1, justifyContent: 'center' }}
-            >
-              Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => { setMode('register'); setError(''); }}
-              className={mode === 'register' ? 'active' : ''}
-              style={{ flex: 1, justifyContent: 'center' }}
-            >
-              Register Tenant
-            </button>
-          </div>
+      {/* Screen Title & Subtitle */}
+      <h1 className="auth-heading">
+        {mode === 'login' ? 'Welcome back' : 'Create your workspace'}
+      </h1>
+      <p className="auth-subheading">
+        {mode === 'login'
+          ? 'Sign in to your OmniGraph workspace.'
+          : 'Set up your organization and administrator account.'}
+      </p>
+
+      {/* Error state */}
+      {error && (
+        <div className="auth-error-card" role="alert">
+          {error}
         </div>
+      )}
 
-        {/* Error Alert */}
-        {error && (
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            background: 'var(--accent-rose-subtle)',
-            border: '1px solid rgba(239, 68, 68, 0.3)',
-            borderRadius: '6px',
-            padding: '8px 12px',
-            marginBottom: '14px',
-            fontSize: '12px',
-            color: 'var(--accent-rose)'
-          }}>
-            <AlertCircle size={14} style={{ flexShrink: 0 }} />
-            <span>{error}</span>
-          </div>
-        )}
-
-        {/* Login Form */}
-        {mode === 'login' ? (
-          <form onSubmit={handleLoginSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div>
-              <label style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginBottom: '4px', display: 'block' }}>
-                Email Address *
-              </label>
-              <input
-                type="email"
-                required
-                placeholder="admin@example.com"
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-              />
+      {/* Mode = LOGIN */}
+      {mode === 'login' ? (
+        <form onSubmit={handleLoginSubmit} noValidate>
+          <div className="auth-field">
+            <div className="auth-label-row">
+              <label htmlFor="login-email" className="auth-label">Work email</label>
             </div>
+            <input
+              id="login-email"
+              ref={firstInputRef}
+              type="email"
+              required
+              autoComplete="email"
+              placeholder="name@company.com"
+              value={loginEmail}
+              onChange={(e) => setLoginEmail(e.target.value)}
+              className="auth-input"
+            />
+          </div>
 
-            <div>
-              <label style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginBottom: '4px', display: 'block' }}>
-                Password *
-              </label>
+          <div className="auth-field">
+            <div className="auth-label-row">
+              <label htmlFor="login-password" className="auth-label">Password</label>
+            </div>
+            <div className="auth-input-group">
               <input
-                type="password"
+                id="login-password"
+                type={showPassword ? 'text' : 'password'}
                 required
-                placeholder="••••••••"
+                autoComplete="current-password"
+                placeholder="••••••••••••"
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
+                className="auth-input"
+                style={{ paddingRight: '40px' }}
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="auth-password-toggle"
+                title={showPassword ? 'Hide password' : 'Show password'}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
             </div>
+          </div>
 
-            <div>
-              <label style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginBottom: '4px', display: 'block' }}>
-                Tenant Identifier (Optional Slug)
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. acme-corp"
-                value={loginSlug}
-                onChange={(e) => setLoginSlug(e.target.value)}
-              />
+          <div className="auth-field">
+            <div className="auth-label-row">
+              <label htmlFor="login-slug" className="auth-label">Workspace</label>
+              <span className="auth-label-optional">Optional</span>
             </div>
+            <input
+              id="login-slug"
+              type="text"
+              autoComplete="organization"
+              placeholder="acme"
+              value={loginSlug}
+              onChange={(e) => setLoginSlug(e.target.value.toLowerCase().trim())}
+              className="auth-input"
+            />
+            <div className="auth-helper-text">
+              Leave blank to detect it from your account.
+            </div>
+          </div>
 
+          <button
+            type="submit"
+            disabled={loading}
+            className="auth-btn-primary"
+          >
+            {loading ? 'Signing in…' : 'Sign in'}
+          </button>
+
+          {/* Switch to Register */}
+          <div className="auth-switch-prompt">
+            <span>New to OmniGraph?</span>
             <button
-              type="submit"
-              disabled={loading}
-              className="btn btn-primary"
-              style={{ marginTop: '8px', width: '100%', padding: '9px' }}
+              type="button"
+              onClick={() => {
+                setMode('register');
+                setError('');
+              }}
+              className="auth-link"
             >
-              <span>{loading ? 'Authenticating...' : 'Sign In'}</span>
+              Create an account →
             </button>
-          </form>
-        ) : (
-          /* Register Form */
-          <form onSubmit={handleRegisterSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-              <div>
-                <label style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
-                  Organization Name *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Acme Global"
-                  value={tenantName}
-                  onChange={handleNameChange}
-                />
-              </div>
+          </div>
 
-              <div>
-                <label style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
-                  Tenant Slug *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="acme-global"
-                  value={tenantSlug}
-                  onChange={(e) => setTenantSlug(e.target.value.toLowerCase())}
-                />
-              </div>
+          {/* Subdued Demo Credentials */}
+          <div className="auth-demo-section">
+            <span>Using the demo?</span>
+            <button
+              type="button"
+              onClick={handleFillDemo}
+              className="auth-demo-link"
+            >
+              Use demo workspace →
+            </button>
+          </div>
+        </form>
+      ) : (
+        /* Mode = REGISTER */
+        <form onSubmit={handleRegisterSubmit} noValidate>
+          <div className="auth-field">
+            <div className="auth-label-row">
+              <label htmlFor="reg-name" className="auth-label">Organization name</label>
             </div>
+            <input
+              id="reg-name"
+              ref={firstInputRef}
+              type="text"
+              required
+              autoComplete="organization"
+              placeholder="Acme Corp"
+              value={tenantName}
+              onChange={handleNameChange}
+              className="auth-input"
+            />
+          </div>
 
-            <div>
-              <label style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
-                Admin Full Name *
-              </label>
+          <div className="auth-field">
+            <div className="auth-label-row">
+              <label htmlFor="reg-slug" className="auth-label">Workspace identifier</label>
+            </div>
+            <input
+              id="reg-slug"
+              type="text"
+              required
+              placeholder="acme"
+              value={tenantSlug}
+              onChange={(e) => setTenantSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]+/g, ''))}
+              className="auth-input"
+            />
+            <div className="auth-helper-text">
+              Lowercase identifier used for your tenant URL and storage.
+            </div>
+          </div>
+
+          <div className="auth-field">
+            <div className="auth-label-row">
+              <label htmlFor="reg-admin-name" className="auth-label">Full name</label>
+            </div>
+            <input
+              id="reg-admin-name"
+              type="text"
+              required
+              autoComplete="name"
+              placeholder="Jane Doe"
+              value={adminName}
+              onChange={(e) => setAdminName(e.target.value)}
+              className="auth-input"
+            />
+          </div>
+
+          <div className="auth-field">
+            <div className="auth-label-row">
+              <label htmlFor="reg-admin-email" className="auth-label">Work email</label>
+            </div>
+            <input
+              id="reg-admin-email"
+              type="email"
+              required
+              autoComplete="email"
+              placeholder="jane@acme.com"
+              value={adminEmail}
+              onChange={(e) => setAdminEmail(e.target.value)}
+              className="auth-input"
+            />
+          </div>
+
+          <div className="auth-field">
+            <div className="auth-label-row">
+              <label htmlFor="reg-admin-password" className="auth-label">Password</label>
+            </div>
+            <div className="auth-input-group">
               <input
-                type="text"
+                id="reg-admin-password"
+                type={showPassword ? 'text' : 'password'}
                 required
-                placeholder="Jane Doe"
-                value={adminName}
-                onChange={(e) => setAdminName(e.target.value)}
+                minLength={6}
+                autoComplete="new-password"
+                placeholder="••••••••••••"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                className="auth-input"
+                style={{ paddingRight: '40px' }}
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="auth-password-toggle"
+                title={showPassword ? 'Hide password' : 'Show password'}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
             </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-              <div>
-                <label style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
-                  Admin Email *
-                </label>
-                <input
-                  type="email"
-                  required
-                  placeholder="jane@acme.com"
-                  value={adminEmail}
-                  onChange={(e) => setAdminEmail(e.target.value)}
-                />
-              </div>
-
-              <div>
-                <label style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '3px', display: 'block' }}>
-                  Password *
-                </label>
-                <input
-                  type="password"
-                  required
-                  minLength={6}
-                  placeholder="••••••••"
-                  value={adminPassword}
-                  onChange={(e) => setAdminPassword(e.target.value)}
-                />
-              </div>
+            <div className="auth-helper-text">
+              Minimum 6 characters.
             </div>
+          </div>
 
+          <div className="auth-field">
+            <div className="auth-label-row">
+              <label htmlFor="reg-desc" className="auth-label">Workspace description</label>
+              <span className="auth-label-optional">Optional</span>
+            </div>
+            <input
+              id="reg-desc"
+              type="text"
+              placeholder="Internal engineering knowledge base"
+              value={tenantDesc}
+              onChange={(e) => setTenantDesc(e.target.value)}
+              className="auth-input"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="auth-btn-primary"
+          >
+            {loading ? 'Creating workspace…' : 'Create workspace'}
+          </button>
+
+          {/* Switch to Sign In */}
+          <div className="auth-switch-prompt">
+            <span>Already have an account?</span>
             <button
-              type="submit"
-              disabled={loading}
-              className="btn btn-primary"
-              style={{ marginTop: '8px', width: '100%', padding: '9px' }}
+              type="button"
+              onClick={() => {
+                setMode('login');
+                setError('');
+              }}
+              className="auth-link"
             >
-              <Sparkles size={13} />
-              <span>{loading ? 'Initializing...' : 'Initialize & Launch'}</span>
+              Sign in →
             </button>
-          </form>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+
+  // If invoked as a dialog modal from inside the active workspace
+  if (!isStandalone) {
+    return (
+      <div
+        className="auth-modal-backdrop"
+        onClick={(e) => {
+          if (e.target === e.currentTarget && onClose) onClose();
+        }}
+      >
+        <div className="auth-modal-dialog">
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="btn-ghost"
+              style={{
+                position: 'absolute',
+                top: '16px',
+                right: '16px',
+                padding: '4px',
+                borderRadius: '6px',
+                color: 'var(--text-muted)'
+              }}
+              aria-label="Close dialog"
+            >
+              <X size={16} />
+            </button>
+          )}
+          {formContent}
+        </div>
+      </div>
+    );
+  }
+
+  // Standalone Full-Bleed Authentication Page
+  return (
+    <div className="auth-layout">
+      {/* Left Column: Subtle Product Context */}
+      <div className="auth-left-pane">
+        {/* Top: Logo & descriptor */}
+        <div className="auth-brand-header">
+          <div className="auth-brand-logo">OG</div>
+          <div>
+            <div className="auth-brand-title">OmniGraph</div>
+            <div className="auth-brand-desc">Enterprise knowledge infrastructure</div>
+          </div>
+        </div>
+
+        {/* Middle: Headline, paragraph & capabilities */}
+        <div className="auth-left-body">
+          <h2 className="auth-headline">
+            Your organization’s knowledge,<br />grounded and connected.
+          </h2>
+          <p className="auth-paragraph">
+            Connect documents, vector search, and knowledge graphs in a secure, isolated workspace.
+          </p>
+
+          <div className="auth-capability-list">
+            <div className="auth-capability-item">
+              <span className="auth-check-icon">✓</span>
+              <span>Tenant-isolated knowledge</span>
+            </div>
+            <div className="auth-capability-item">
+              <span className="auth-check-icon">✓</span>
+              <span>Verifiable source citations</span>
+            </div>
+            <div className="auth-capability-item">
+              <span className="auth-check-icon">✓</span>
+              <span>Graph + semantic retrieval</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Bottom indicator */}
+        <div className="auth-left-footer">
+          Enterprise Edition · Multi-tenant architecture
+        </div>
+      </div>
+
+      {/* Right Column: Restrained Authentication Form */}
+      <div className="auth-right-pane">
+        {/* Minimal theme toggle button in the top corner */}
+        {setTheme && (
+          <button
+            onClick={cycleTheme}
+            className="auth-theme-btn"
+            title={`Current theme: ${theme}`}
+            aria-label={`Toggle theme (currently ${theme})`}
+          >
+            {theme === 'light' ? <Sun size={13} /> : theme === 'dark' ? <Moon size={13} /> : <Laptop size={13} />}
+            <span style={{ textTransform: 'capitalize' }}>{theme}</span>
+          </button>
         )}
+
+        {formContent}
       </div>
     </div>
   );
